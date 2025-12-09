@@ -29,7 +29,17 @@ const PlayerState = struct {
     all_samples: []f32,
 };
 
+// Window dimensions - consider making configurable
+const WINDOW_WIDTH = 800;
+const WINDOW_HEIGHT = 600;
 const FRAMES_PER_CHUNK = 1000;
+
+// UI layout constants
+const WAVEFORM_Y_CENTER = 200;
+const WAVEFORM_HEIGHT = 150;
+const PLAYHEAD_Y_START = 50;
+const PLAYHEAD_Y_END = 350;
+const FRAME_DISPLAY_SCALE = 100.0;
 
 fn renderFileError(filePath: []const u8) void {
     rl.initWindow(600, 200, "Error");
@@ -42,14 +52,6 @@ fn renderFileError(filePath: []const u8) void {
         rl.drawText(rl.textFormat("%s", .{filePath.ptr}), 10, 80, 20, rl.Color.red);
         rl.endDrawing();
     }
-}
-
-fn f32Floor(init: f32, floor: f32) f32 {
-    return if (init < floor) floor else init;
-}
-
-fn f32Ceil(init: f32, ceil: f32) f32 {
-    return if (init > ceil) ceil else init;
 }
 
 fn initDataForSong(alloc: std.mem.Allocator, song_file_path: []const u8) !SongData {
@@ -216,10 +218,11 @@ fn startMainLoop(alloc: std.mem.Allocator, song_data: SongData) !void {
 
     // raylib setup
     rl.setConfigFlags(.{ .vsync_hint = true });
-    rl.initWindow(800, 600, "Music Player");
+    rl.initWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Music Player");
     defer rl.closeWindow();
 
-    const frame_display_scale: f32 = 100;
+    // Cache frequently accessed values to avoid repeated pointer dereferences
+    var current_track = player_state.current_track.?;
 
     while (!rl.windowShouldClose()) {
         rl.beginDrawing();
@@ -229,87 +232,90 @@ fn startMainLoop(alloc: std.mem.Allocator, song_data: SongData) !void {
         rl.drawFPS(10, 10);
         rl.drawText("Playing Music...", 10, 40, 20, rl.Color.dark_gray);
 
-        const cursor_frame_raw = try player_state.current_track.?.sound.getCursorInPcmFrames();
+        const cursor_frame_raw = try current_track.sound.getCursorInPcmFrames();
         // Handle invalid cursor positions (zaudio sometimes returns garbage after seeking)
-        const cursor_frame = if (cursor_frame_raw > player_state.current_track.?.total_frames or cursor_frame_raw >= 0xFFFFFFFFFFFFF000) 0 else cursor_frame_raw;
-        const current_seconds_real: f32 = @as(f32, @floatFromInt(cursor_frame)) / @as(f32, @floatFromInt(player_state.current_track.?.sample_rate));
-        const current_time_adjusted = current_seconds_real * player_state.current_track.?.speed_modifier;
+        const cursor_frame = if (cursor_frame_raw > current_track.total_frames or cursor_frame_raw >= 0xFFFFFFFFFFFFF000) 0 else cursor_frame_raw;
+        const current_seconds_real: f32 = @as(f32, @floatFromInt(cursor_frame)) / @as(f32, @floatFromInt(current_track.sample_rate));
+        const current_time_adjusted = current_seconds_real * current_track.speed_modifier;
+
         rl.drawText(rl.textFormat("Current Position (seconds): %f/%f", .{ current_time_adjusted, player_state.base_track_total_seconds }), 10, 80, 20, rl.Color.dark_gray);
-        rl.drawText(rl.textFormat("Speed Modifier: %f", .{player_state.current_track.?.speed_modifier}), 10, 120, 20, rl.Color.dark_gray);
+        rl.drawText(rl.textFormat("Speed Modifier: %f", .{current_track.speed_modifier}), 10, 120, 20, rl.Color.dark_gray);
 
         // Draw waveform
-        const wave_frames = wf.getChunksFromPlayheadFrame(wave_form_state, cursor_frame, 800, player_state.current_track.?.channels, player_state.current_track.?.speed_modifier);
+        const wave_frames = wf.getChunksFromPlayheadFrame(wave_form_state, cursor_frame, WINDOW_WIDTH, current_track.channels, current_track.speed_modifier);
         for (wave_frames, 0..) |frame, index| {
-            const y_offset = @as(i32, @intFromFloat(frame * frame_display_scale));
-            rl.drawLine(@intCast(index), 200 - y_offset, @intCast(index), 200 + y_offset, rl.Color.dark_gray);
+            const y_offset = @as(i32, @intFromFloat(frame * FRAME_DISPLAY_SCALE));
+            rl.drawLine(@intCast(index), WAVEFORM_Y_CENTER - y_offset, @intCast(index), WAVEFORM_Y_CENTER + y_offset, rl.Color.dark_gray);
         }
 
         // Draw vertical bar at playhead position
         const total_chunks: u64 = @intCast(wave_form_state.chunks.len);
-        const playhead_x = wf.getPlayheadScreenPosition(cursor_frame, 800, player_state.current_track.?.channels, player_state.current_track.?.speed_modifier, total_chunks);
-        rl.drawLine(@intCast(playhead_x), 50, @intCast(playhead_x), 350, rl.Color.red);
+        const playhead_x = wf.getPlayheadScreenPosition(cursor_frame, WINDOW_WIDTH, current_track.channels, current_track.speed_modifier, total_chunks);
+        rl.drawLine(@intCast(playhead_x), PLAYHEAD_Y_START, @intCast(playhead_x), PLAYHEAD_Y_END, rl.Color.red);
 
         // Controls
         if (rl.isKeyPressed(.down)) {
-            std.debug.print("Down key pressed - decreasing speed\n", .{});
-            const current_speed = player_state.current_track.?.speed_modifier;
-            var next_track: ?*MusicTrack = player_state.current_track;
+            const current_speed = current_track.speed_modifier;
+            var next_track: ?*MusicTrack = current_track;
             for (player_state.tracks.items) |*track| {
                 if (track.speed_modifier < current_speed) {
-                    if (next_track == player_state.current_track or track.speed_modifier > next_track.?.speed_modifier) {
+                    if (next_track == current_track or track.speed_modifier > next_track.?.speed_modifier) {
                         next_track = track;
                     }
                 }
             }
-            if (next_track != player_state.current_track) {
-                try player_state.current_track.?.sound.stop();
+            if (next_track != current_track) {
+                try current_track.sound.stop();
                 // For speed decrease, we need to seek to a later position in the slower track
                 const adjusted_frame = @as(u64, @intFromFloat(@as(f32, @floatFromInt(cursor_frame)) * (current_speed / next_track.?.speed_modifier)));
                 try next_track.?.sound.seekToPcmFrame(adjusted_frame);
                 try next_track.?.sound.start();
                 player_state.current_track = next_track;
+                // Update cached reference
+                current_track = next_track.?;
             }
         }
 
         if (rl.isKeyPressed(.up)) {
-            std.debug.print("Up key pressed - increasing speed\n", .{});
-            const current_speed = player_state.current_track.?.speed_modifier;
-            var next_track: ?*MusicTrack = player_state.current_track;
+            const current_speed = current_track.speed_modifier;
+            var next_track: ?*MusicTrack = current_track;
             for (player_state.tracks.items) |*track| {
                 if (track.speed_modifier > current_speed) {
-                    if (next_track == player_state.current_track or track.speed_modifier < next_track.?.speed_modifier) {
+                    if (next_track == current_track or track.speed_modifier < next_track.?.speed_modifier) {
                         next_track = track;
                     }
                 }
             }
-            if (next_track != player_state.current_track) {
-                try player_state.current_track.?.sound.stop();
+            if (next_track != current_track) {
+                try current_track.sound.stop();
                 // For speed increase, we need to seek to an earlier position in the faster track
                 const adjusted_frame = @as(u64, @intFromFloat(@as(f32, @floatFromInt(cursor_frame)) * (current_speed / next_track.?.speed_modifier)));
                 try next_track.?.sound.seekToPcmFrame(adjusted_frame);
                 try next_track.?.sound.start();
                 player_state.current_track = next_track;
+                // Update cached reference
+                current_track = next_track.?;
             }
         }
 
         if (rl.isKeyPressed(.left)) {
-            const seek_time = @max(f32Floor(current_seconds_real - 5 / player_state.current_track.?.speed_modifier, 0), 0);
-            const seek_frame = @as(u64, @intFromFloat(seek_time * @as(f32, @floatFromInt(player_state.current_track.?.sample_rate))));
-            try player_state.current_track.?.sound.seekToPcmFrame(seek_frame);
+            const seek_time = std.math.clamp(current_seconds_real - 5 / current_track.speed_modifier, 0.0, player_state.base_track_total_seconds);
+            const seek_frame = @as(u64, @intFromFloat(seek_time * @as(f32, @floatFromInt(current_track.sample_rate))));
+            try current_track.sound.seekToPcmFrame(seek_frame);
         }
 
         if (rl.isKeyPressed(.right)) {
-            const seek_time = @min(f32Ceil(current_seconds_real + 5 / player_state.current_track.?.speed_modifier, player_state.base_track_total_seconds), player_state.base_track_total_seconds);
-            const seek_frame = @as(u64, @intFromFloat(seek_time * @as(f32, @floatFromInt(player_state.current_track.?.sample_rate))));
-            try player_state.current_track.?.sound.seekToPcmFrame(seek_frame);
+            const seek_time = std.math.clamp(current_seconds_real + 5 / current_track.speed_modifier, 0.0, player_state.base_track_total_seconds);
+            const seek_frame = @as(u64, @intFromFloat(seek_time * @as(f32, @floatFromInt(current_track.sample_rate))));
+            try current_track.sound.seekToPcmFrame(seek_frame);
         }
 
         if (rl.isKeyPressed(.space)) {
-            const is_playing = player_state.current_track.?.sound.isPlaying();
+            const is_playing = current_track.sound.isPlaying();
             if (is_playing) {
-                try player_state.current_track.?.sound.stop();
+                try current_track.sound.stop();
             } else {
-                try player_state.current_track.?.sound.start();
+                try current_track.sound.start();
             }
         }
     }
