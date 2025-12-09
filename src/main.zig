@@ -105,12 +105,16 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
             const frames_read_u32: u32 = @intCast(frames_read);
             const input_slice = audio_state.input_buffer[0 .. frames_read_u32 * audio_state.channels];
             audio_state.soundtouch.putSamples(input_slice, frames_read_u32);
-
-            // Update current frame position based on input frames consumed
-            const current = audio_state.current_frame.load(.acquire);
-            audio_state.current_frame.store(current + frames_read, .release);
         }
     }
+
+    // Update position based on OUTPUT frames produced, scaled by tempo
+    // This gives smooth playhead movement that matches what the user hears
+    // At tempo 2.0, each output frame represents 2 input frames of progress
+    // At tempo 0.5, each output frame represents 0.5 input frames of progress
+    const position_advance: u64 = @intFromFloat(@as(f32, @floatFromInt(frames_output)) * current_speed);
+    const current = audio_state.current_frame.load(.acquire);
+    audio_state.current_frame.store(current + position_advance, .release);
 
     // Fill any remaining output with silence
     if (frames_output < frame_count) {
