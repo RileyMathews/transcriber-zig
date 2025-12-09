@@ -17,8 +17,6 @@ const AudioState = struct {
     soundtouch: st.SoundTouch,
     // Current playback speed (1.0 = normal, 0.5 = half speed, 2.0 = double speed)
     playback_speed: std.atomic.Value(f32),
-    // Last tempo that was set on SoundTouch (to avoid redundant calls)
-    last_tempo_set: std.atomic.Value(f32),
     // Input buffer for reading from decoder before processing
     input_buffer: []f32,
 };
@@ -66,13 +64,9 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
         return;
     }
 
-    // Get current playback speed and update SoundTouch tempo only if changed
     const current_speed = audio_state.playback_speed.load(.acquire);
-    const last_tempo = audio_state.last_tempo_set.load(.acquire);
-    if (current_speed != last_tempo) {
-        audio_state.soundtouch.setTempo(current_speed);
-        audio_state.last_tempo_set.store(current_speed, .release);
-    }
+    // TODO: can this not just be set when the speed changes?
+    audio_state.soundtouch.setTempo(current_speed);
 
     var frames_output: u32 = 0;
     var eof_reached = false;
@@ -198,7 +192,6 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
         .current_frame = std.atomic.Value(u64).init(0),
         .soundtouch = soundtouch,
         .playback_speed = std.atomic.Value(f32).init(1.0),
-        .last_tempo_set = std.atomic.Value(f32).init(1.0),
         .input_buffer = input_buffer,
     };
 
