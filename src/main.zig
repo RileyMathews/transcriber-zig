@@ -17,6 +17,8 @@ const AudioState = struct {
     soundtouch: st.SoundTouch,
     // Current playback speed (1.0 = normal, 0.5 = half speed, 2.0 = double speed)
     playback_speed: std.atomic.Value(f32),
+    // Last tempo that was set on SoundTouch (to avoid redundant calls)
+    last_tempo_set: std.atomic.Value(f32),
     // Input buffer for reading from decoder before processing
     input_buffer: []f32,
 };
@@ -64,56 +66,51 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
         return;
     }
 
-    // Get current playback speed and update SoundTouch tempo
+    // Get current playback speed and update SoundTouch tempo only if changed
     const current_speed = audio_state.playback_speed.load(.acquire);
-    audio_state.soundtouch.setTempo(current_speed);
+    const last_tempo = audio_state.last_tempo_set.load(.acquire);
+    if (current_speed != last_tempo) {
+        audio_state.soundtouch.setTempo(current_speed);
+        audio_state.last_tempo_set.store(current_speed, .release);
+    }
 
     var frames_output: u32 = 0;
-    var total_frames_read: u64 = 0;
+    var eof_reached = false;
 
-    // Keep feeding SoundTouch until we have enough output frames
-    while (frames_output < frame_count) {
-        // First, try to get any available processed samples from SoundTouch
+    // Keep feeding SoundTouch and retrieving output until we have enough
+    while (frames_output < frame_count and !eof_reached) {
+        // First check if SoundTouch has output available
         const available = audio_state.soundtouch.numSamples();
         if (available > 0) {
             const frames_to_receive = @min(available, frame_count - frames_output);
-            const output_slice = output_ptr[frames_output * audio_state.channels .. total_output_samples];
+            const output_offset = frames_output * audio_state.channels;
+            const output_slice = output_ptr[output_offset..total_output_samples];
             const received = audio_state.soundtouch.receiveSamples(output_slice, frames_to_receive);
             frames_output += received;
+
             if (frames_output >= frame_count) break;
         }
 
-        // Need more input - read from decoder into input buffer
-        // When tempo > 1.0, we need more input frames to produce the same output
-        // When tempo < 1.0, we need fewer input frames
-        const frames_to_read = @min(SOUNDTOUCH_BUFFER_FRAMES, @as(u32, @intFromFloat(@as(f32, @floatFromInt(frame_count)) * current_speed * 2.0)));
+        // Need more input - read from decoder
+        // Read enough to account for tempo (at 2x speed we need 2x input)
+        const frames_to_read: u32 = @min(SOUNDTOUCH_BUFFER_FRAMES, frame_count * 2);
         const frames_read = audio_state.decoder.readPCMFrames(audio_state.input_buffer.ptr, frames_to_read) catch 0;
 
         if (frames_read == 0) {
-            // End of file - flush remaining samples and fill rest with silence
+            eof_reached = true;
+            // End of file - flush remaining samples from SoundTouch
             audio_state.soundtouch.flush();
-            const remaining_available = audio_state.soundtouch.numSamples();
-            if (remaining_available > 0) {
-                const frames_to_receive = @min(remaining_available, frame_count - frames_output);
-                const output_slice = output_ptr[frames_output * audio_state.channels .. total_output_samples];
-                const received = audio_state.soundtouch.receiveSamples(output_slice, frames_to_receive);
-                frames_output += received;
-            }
-            break;
+        } else {
+            // Feed samples to SoundTouch
+            const frames_read_u32: u32 = @intCast(frames_read);
+            const input_slice = audio_state.input_buffer[0 .. frames_read_u32 * audio_state.channels];
+            audio_state.soundtouch.putSamples(input_slice, frames_read_u32);
+
+            // Update current frame position based on input frames consumed
+            const current = audio_state.current_frame.load(.acquire);
+            audio_state.current_frame.store(current + frames_read, .release);
         }
-
-        total_frames_read += frames_read;
-
-        // Feed samples to SoundTouch
-        const frames_read_u32: u32 = @intCast(frames_read);
-        const input_slice = audio_state.input_buffer[0 .. frames_read_u32 * audio_state.channels];
-        audio_state.soundtouch.putSamples(input_slice, frames_read_u32);
     }
-
-    // Update current frame position atomically (account for speed change)
-    // The position advances based on how many input frames we consumed
-    const current = audio_state.current_frame.load(.acquire);
-    audio_state.current_frame.store(current + total_frames_read, .release);
 
     // Fill any remaining output with silence
     if (frames_output < frame_count) {
@@ -197,6 +194,7 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
         .current_frame = std.atomic.Value(u64).init(0),
         .soundtouch = soundtouch,
         .playback_speed = std.atomic.Value(f32).init(1.0),
+        .last_tempo_set = std.atomic.Value(f32).init(1.0),
         .input_buffer = input_buffer,
     };
 

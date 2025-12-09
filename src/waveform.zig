@@ -5,7 +5,7 @@ pub const WaveFormDisplayState = struct {
     chunks: []f32,
 };
 
-pub const FRAMES_PER_CHUNK = 1000;
+pub const FRAMES_PER_CHUNK = 2000;
 
 pub fn loadAudioBufferFromDecoder(alloc: std.mem.Allocator, decoder: *za.Decoder, total_frames: u64, channels: u32) ![]f32 {
     const audio_buffer_f32 = try alloc.alloc(f32, total_frames * channels);
