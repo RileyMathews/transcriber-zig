@@ -59,8 +59,7 @@ fn initDataForSong(alloc: std.mem.Allocator, song_file_path: []const u8) !SongDa
         const home = std.posix.getenv("HOME") orelse ".local/share";
         break :blk try std.fs.path.join(alloc, &.{ home, ".local", "share" });
     };
-    defer if (std.posix.getenv("XDG_DATA_HOME") != null) alloc.free(data_dir);
-    defer if (std.posix.getenv("XDG_DATA_HOME") == null) alloc.free(data_dir);
+    defer alloc.free(data_dir);
 
     const app_data_dir = try std.fs.path.join(alloc, &.{ data_dir, "transcriber" });
     defer alloc.free(app_data_dir);
@@ -232,9 +231,7 @@ fn startMainLoop(alloc: std.mem.Allocator, song_data: SongData) !void {
         rl.drawFPS(10, 10);
         rl.drawText("Playing Music...", 10, 40, 20, rl.Color.dark_gray);
 
-        const cursor_frame_raw = try current_track.sound.getCursorInPcmFrames();
-        // Handle invalid cursor positions (zaudio sometimes returns garbage after seeking)
-        const cursor_frame = if (cursor_frame_raw > current_track.total_frames or cursor_frame_raw >= 0xFFFFFFFFFFFFF000) 0 else cursor_frame_raw;
+        const cursor_frame = try current_track.sound.getCursorInPcmFrames();
         const current_seconds_real: f32 = @as(f32, @floatFromInt(cursor_frame)) / @as(f32, @floatFromInt(current_track.sample_rate));
         const current_time_adjusted = current_seconds_real * current_track.speed_modifier;
 
