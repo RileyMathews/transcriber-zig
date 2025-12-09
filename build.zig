@@ -1,5 +1,56 @@
 const std = @import("std");
 
+fn buildSoundTouch(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+    const soundtouch_dep = b.dependency("soundtouch", .{});
+
+    const lib = b.addLibrary(.{
+        .linkage = .static,
+        .name = "soundtouch",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libcpp = true,
+        }),
+    });
+
+    // Add include paths
+    lib.addIncludePath(soundtouch_dep.path("include"));
+    lib.addIncludePath(soundtouch_dep.path("source/SoundTouch"));
+
+    // Define SOUNDTOUCH_FLOAT_SAMPLES for floating point processing
+    lib.root_module.addCMacro("SOUNDTOUCH_FLOAT_SAMPLES", "1");
+    lib.root_module.addCMacro("DLL_EXPORTS", "1");
+
+    const soundtouch_sources = &[_][]const u8{
+        "source/SoundTouch/AAFilter.cpp",
+        "source/SoundTouch/BPMDetect.cpp",
+        "source/SoundTouch/FIFOSampleBuffer.cpp",
+        "source/SoundTouch/FIRFilter.cpp",
+        "source/SoundTouch/InterpolateCubic.cpp",
+        "source/SoundTouch/InterpolateLinear.cpp",
+        "source/SoundTouch/InterpolateShannon.cpp",
+        "source/SoundTouch/PeakFinder.cpp",
+        "source/SoundTouch/RateTransposer.cpp",
+        "source/SoundTouch/SoundTouch.cpp",
+        "source/SoundTouch/TDStretch.cpp",
+        "source/SoundTouch/cpu_detect_x86.cpp",
+        "source/SoundTouch/mmx_optimized.cpp",
+        "source/SoundTouch/sse_optimized.cpp",
+        "source/SoundTouchDLL/SoundTouchDLL.cpp",
+    };
+
+    lib.addCSourceFiles(.{
+        .root = soundtouch_dep.path("."),
+        .files = soundtouch_sources,
+        .flags = &.{
+            "-fno-sanitize=undefined",
+            "-fPIC",
+        },
+    });
+
+    return lib;
+}
+
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
 // executed by an external runner. The functions in `std.Build` implement a DSL
@@ -101,6 +152,17 @@ pub fn build(b: *std.Build) void {
 
     exe.root_module.addImport("zaudio", zaudio.module("root"));
     exe.linkLibrary(zaudio.artifact("miniaudio"));
+
+    // Build and link SoundTouch
+    const soundtouch_lib = buildSoundTouch(b, target, optimize);
+    exe.linkLibrary(soundtouch_lib);
+
+    // Add SoundTouch include path for the C header (needed for @cImport)
+    const soundtouch_dep = b.dependency("soundtouch", .{});
+    exe.addIncludePath(soundtouch_dep.path("source/SoundTouchDLL"));
+    exe.addIncludePath(soundtouch_dep.path("include"));
+    exe.root_module.addIncludePath(soundtouch_dep.path("source/SoundTouchDLL"));
+    exe.root_module.addIncludePath(soundtouch_dep.path("include"));
 
     // Allow duplicate symbols by using wrapper approach
     exe.linkLibC();

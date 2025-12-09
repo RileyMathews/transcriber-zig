@@ -2,37 +2,36 @@ const rl = @import("raylib");
 const za = @import("zaudio");
 const std = @import("std");
 const wf = @import("waveform.zig");
+const st = @import("soundtouch.zig");
 
-const SongSpeedEntry = struct {
-    speed_modifier: f32,
-    audio_file_path: []const u8,
-};
-
-const SongData = struct {
-    base_speed_audio_path: []const u8,
-    speed_entries: []SongSpeedEntry,
-};
-
-const MusicTrack = struct {
-    sound: *za.Sound,
-    speed_modifier: f32,
+const AudioState = struct {
+    decoder: *za.Decoder,
     channels: u32,
     sample_rate: u32,
     total_frames: u64,
     total_seconds: f32,
+    is_playing: bool,
+    // Current playback position in frames (updated by audio callback)
+    current_frame: std.atomic.Value(u64),
+    // SoundTouch processor for time stretching
+    soundtouch: st.SoundTouch,
+    // Current playback speed (1.0 = normal, 0.5 = half speed, 2.0 = double speed)
+    playback_speed: std.atomic.Value(f32),
+    // Input buffer for reading from decoder before processing
+    input_buffer: []f32,
 };
 
-const PlayerState = struct {
-    tracks: std.ArrayList(MusicTrack),
-    current_track: ?*MusicTrack,
-    base_track_total_seconds: f32,
-    all_samples: []f32,
-};
+// Speed adjustment constants
+const SPEED_STEP: f32 = 0.05; // 5% speed change per key press
+const MIN_SPEED: f32 = 0.25; // Minimum 25% speed
+const MAX_SPEED: f32 = 2.0; // Maximum 200% speed
 
-// Window dimensions - consider making configurable
+// Buffer size for SoundTouch processing
+const SOUNDTOUCH_BUFFER_FRAMES: u32 = 4096;
+
+// Window dimensions
 const WINDOW_WIDTH = 800;
 const WINDOW_HEIGHT = 600;
-const FRAMES_PER_CHUNK = 1000;
 
 // UI layout constants
 const WAVEFORM_Y_CENTER = 200;
@@ -54,60 +53,73 @@ fn renderFileError(filePath: []const u8) void {
     }
 }
 
-fn initDataForSong(alloc: std.mem.Allocator, song_file_path: []const u8) !SongData {
-    const data_dir = std.posix.getenv("XDG_DATA_HOME") orelse blk: {
-        const home = std.posix.getenv("HOME") orelse ".local/share";
-        break :blk try std.fs.path.join(alloc, &.{ home, ".local", "share" });
-    };
-    defer alloc.free(data_dir);
+fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, frame_count: u32) callconv(.c) void {
+    const audio_state: *AudioState = @ptrCast(@alignCast(device.getUserData()));
+    const output_ptr: [*]f32 = @ptrCast(@alignCast(output));
+    const total_output_samples = frame_count * audio_state.channels;
 
-    const app_data_dir = try std.fs.path.join(alloc, &.{ data_dir, "transcriber" });
-    defer alloc.free(app_data_dir);
-
-    std.fs.makeDirAbsolute(app_data_dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
-
-    const song_base = std.fs.path.basename(song_file_path);
-    const song_name = song_base[0..std.fs.path.stem(song_base).len];
-    const song_data_dir = try std.fs.path.join(alloc, &.{ app_data_dir, song_name });
-    defer alloc.free(song_data_dir);
-
-    std.fs.makeDirAbsolute(song_data_dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
-
-    const song_data_path = try std.fs.path.join(alloc, &.{ song_data_dir, "data.json" });
-    defer alloc.free(song_data_path);
-
-    // For simplicity, always create new data for now
-    // Copy song into <data_dir>/base_audio.<ext>
-    const song_filename = try std.fmt.allocPrint(alloc, "audio_base{s}", .{std.fs.path.extension(song_base)});
-    defer alloc.free(song_filename);
-
-    const dest_song_path = try std.fs.path.join(alloc, &.{ song_data_dir, song_filename });
-    defer alloc.free(dest_song_path);
-
-    if (std.fs.accessAbsolute(dest_song_path, .{})) |_| {
-        // File exists
-    } else |_| {
-        try std.fs.copyFileAbsolute(song_file_path, dest_song_path, .{});
+    if (!audio_state.is_playing) {
+        // Output silence when paused
+        @memset(output_ptr[0..total_output_samples], 0);
+        return;
     }
 
-    const speed_entries = try alloc.alloc(SongSpeedEntry, 1);
-    speed_entries[0] = .{
-        .speed_modifier = 1.0,
-        .audio_file_path = try alloc.dupe(u8, dest_song_path),
-    };
+    // Get current playback speed and update SoundTouch tempo
+    const current_speed = audio_state.playback_speed.load(.acquire);
+    audio_state.soundtouch.setTempo(current_speed);
 
-    const song_data = SongData{
-        .speed_entries = speed_entries,
-        .base_speed_audio_path = try alloc.dupe(u8, dest_song_path),
-    };
+    var frames_output: u32 = 0;
+    var total_frames_read: u64 = 0;
 
-    return song_data;
+    // Keep feeding SoundTouch until we have enough output frames
+    while (frames_output < frame_count) {
+        // First, try to get any available processed samples from SoundTouch
+        const available = audio_state.soundtouch.numSamples();
+        if (available > 0) {
+            const frames_to_receive = @min(available, frame_count - frames_output);
+            const output_slice = output_ptr[frames_output * audio_state.channels .. total_output_samples];
+            const received = audio_state.soundtouch.receiveSamples(output_slice, frames_to_receive);
+            frames_output += received;
+            if (frames_output >= frame_count) break;
+        }
+
+        // Need more input - read from decoder into input buffer
+        // When tempo > 1.0, we need more input frames to produce the same output
+        // When tempo < 1.0, we need fewer input frames
+        const frames_to_read = @min(SOUNDTOUCH_BUFFER_FRAMES, @as(u32, @intFromFloat(@as(f32, @floatFromInt(frame_count)) * current_speed * 2.0)));
+        const frames_read = audio_state.decoder.readPCMFrames(audio_state.input_buffer.ptr, frames_to_read) catch 0;
+
+        if (frames_read == 0) {
+            // End of file - flush remaining samples and fill rest with silence
+            audio_state.soundtouch.flush();
+            const remaining_available = audio_state.soundtouch.numSamples();
+            if (remaining_available > 0) {
+                const frames_to_receive = @min(remaining_available, frame_count - frames_output);
+                const output_slice = output_ptr[frames_output * audio_state.channels .. total_output_samples];
+                const received = audio_state.soundtouch.receiveSamples(output_slice, frames_to_receive);
+                frames_output += received;
+            }
+            break;
+        }
+
+        total_frames_read += frames_read;
+
+        // Feed samples to SoundTouch
+        const frames_read_u32: u32 = @intCast(frames_read);
+        const input_slice = audio_state.input_buffer[0 .. frames_read_u32 * audio_state.channels];
+        audio_state.soundtouch.putSamples(input_slice, frames_read_u32);
+    }
+
+    // Update current frame position atomically (account for speed change)
+    // The position advances based on how many input frames we consumed
+    const current = audio_state.current_frame.load(.acquire);
+    audio_state.current_frame.store(current + total_frames_read, .release);
+
+    // Fill any remaining output with silence
+    if (frames_output < frame_count) {
+        const start_sample = frames_output * audio_state.channels;
+        @memset(output_ptr[start_sample..total_output_samples], 0);
+    }
 }
 
 pub fn main() anyerror!void {
@@ -125,103 +137,100 @@ pub fn main() anyerror!void {
 
     const filePath = args[1];
 
-    if (!std.fs.path.isAbsolute(filePath)) {
-        // Check if file exists
-        std.fs.accessAbsolute(filePath, .{}) catch {
-            renderFileError(filePath);
-            return;
-        };
-    }
+    // Check if file exists
+    std.fs.cwd().access(filePath, .{}) catch {
+        renderFileError(filePath);
+        return;
+    };
 
-    const song_data = try initDataForSong(alloc, filePath);
-    defer {
-        alloc.free(song_data.base_speed_audio_path);
-        for (song_data.speed_entries) |entry| {
-            alloc.free(entry.audio_file_path);
-        }
-        alloc.free(song_data.speed_entries);
-    }
-
-    try startMainLoop(alloc, song_data);
+    try startMainLoop(alloc, filePath);
 }
 
-fn startMainLoop(alloc: std.mem.Allocator, song_data: SongData) !void {
-    // za initialization
+fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
+    // Initialize zaudio
     za.init(alloc);
     defer za.deinit();
 
-    const engine = try za.Engine.create(null);
-    defer engine.destroy();
+    // Create null-terminated path for decoder
+    const c_path = try alloc.dupeZ(u8, file_path);
+    defer alloc.free(c_path);
 
-    var player_state = PlayerState{
-        .tracks = try std.ArrayList(MusicTrack).initCapacity(alloc, 10),
-        .current_track = null,
-        .base_track_total_seconds = 0,
-        .all_samples = undefined,
+    // Create decoder to get audio format info
+    const decoder_config = za.Decoder.Config.init(.float32, 0, 0); // Let decoder choose channels/sample_rate
+    const decoder = try za.Decoder.createFromFile(c_path, decoder_config);
+    defer decoder.destroy();
+
+    // Get audio format info
+    var format: za.Format = undefined;
+    var channels: u32 = undefined;
+    var sample_rate: u32 = undefined;
+    try decoder.getDataFormat(&format, &channels, &sample_rate, null);
+
+    const total_frames = try decoder.getLengthInPCMFrames();
+    const total_seconds: f32 = @as(f32, @floatFromInt(total_frames)) / @as(f32, @floatFromInt(sample_rate));
+
+    std.debug.print("Audio format: channels={}, sample_rate={}, total_frames={}, total_seconds={d:.2}\n", .{ channels, sample_rate, total_frames, total_seconds });
+
+    // Initialize SoundTouch for time stretching
+    var soundtouch = st.SoundTouch.create() orelse {
+        std.debug.print("Failed to create SoundTouch instance\n", .{});
+        return error.SoundTouchInitFailed;
     };
-    defer {
-        for (player_state.tracks.items) |track| {
-            track.sound.destroy();
-        }
-        player_state.tracks.deinit(alloc);
-        alloc.free(player_state.all_samples);
-    }
+    defer soundtouch.destroy();
 
-    var wave_form_state: wf.WaveFormDisplayState = undefined;
+    soundtouch.setChannels(channels);
+    soundtouch.setSampleRate(sample_rate);
+    soundtouch.setTempo(1.0); // Start at normal speed
+
+    // Allocate input buffer for SoundTouch processing
+    const input_buffer = try alloc.alloc(f32, SOUNDTOUCH_BUFFER_FRAMES * channels);
+    defer alloc.free(input_buffer);
+
+    // Create audio state
+    var audio_state = AudioState{
+        .decoder = decoder,
+        .channels = channels,
+        .sample_rate = sample_rate,
+        .total_frames = total_frames,
+        .total_seconds = total_seconds,
+        .is_playing = true,
+        .current_frame = std.atomic.Value(u64).init(0),
+        .soundtouch = soundtouch,
+        .playback_speed = std.atomic.Value(f32).init(1.0),
+        .input_buffer = input_buffer,
+    };
+
+    // Configure and create device
+    var device_config = za.Device.Config.init(.playback);
+    device_config.playback.format = .float32;
+    device_config.playback.channels = channels;
+    device_config.sample_rate = sample_rate;
+    device_config.data_callback = dataCallback;
+    device_config.user_data = &audio_state;
+
+    const device = try za.Device.create(null, device_config);
+    defer device.destroy();
+
+    // Load audio buffer for waveform display using a separate decoder
+    const waveform_decoder = try za.Decoder.createFromFile(c_path, za.Decoder.Config.init(.float32, channels, sample_rate));
+    defer waveform_decoder.destroy();
+
+    const all_samples = try wf.loadAudioBufferFromDecoder(alloc, waveform_decoder, total_frames, channels);
+    defer alloc.free(all_samples);
+
+    const wave_form_state = try wf.initWaveFormState(alloc, all_samples);
     defer wf.deInitWaveFormDisplay(alloc, wave_form_state);
 
-    for (song_data.speed_entries) |entry| {
-        const c_path = try alloc.dupeZ(u8, entry.audio_file_path);
-        defer alloc.free(c_path);
-        const sound = try engine.createSoundFromFile(c_path, .{});
-        errdefer sound.destroy();
+    // Start playback
+    try device.start();
+    defer device.stop() catch {};
 
-        var channels: u32 = undefined;
-        var sample_rate: u32 = undefined;
-        var format: za.Format = undefined;
-        try sound.getDataFormat(&format, &channels, &sample_rate, null);
-
-        const total_frames = try sound.getLengthInPcmFrames();
-        const total_seconds: f32 = @as(f32, @floatFromInt(total_frames)) / @as(f32, @floatFromInt(sample_rate));
-
-        const track = MusicTrack{
-            .sound = sound,
-            .speed_modifier = entry.speed_modifier,
-            .channels = channels,
-            .sample_rate = sample_rate,
-            .total_frames = total_frames,
-            .total_seconds = total_seconds,
-        };
-        try player_state.tracks.append(alloc, track);
-
-        if (track.speed_modifier == 1) {
-            std.debug.print("Setting current track to base speed {}\n", .{entry.speed_modifier});
-            player_state.current_track = &player_state.tracks.items[player_state.tracks.items.len - 1];
-            player_state.base_track_total_seconds = track.total_seconds;
-
-            // Load audio buffer for waveform using Decoder
-            const decoder_config = za.Decoder.Config.init(.float32, channels, sample_rate);
-            const decoder = try za.Decoder.createFromFile(c_path, decoder_config);
-            defer decoder.destroy();
-
-            player_state.all_samples = try wf.loadAudioBufferFromDecoder(alloc, decoder, total_frames, channels);
-            wave_form_state = try wf.initWaveFormState(alloc, player_state.all_samples);
-        }
-    }
-
-    std.debug.print("About to start sound...\n", .{});
-    try player_state.current_track.?.sound.seekToPcmFrame(0);
-    try player_state.current_track.?.sound.start();
-
-    std.debug.print("{}\n", .{player_state.all_samples.len});
+    std.debug.print("Playback started\n", .{});
 
     // raylib setup
     rl.setConfigFlags(.{ .vsync_hint = true });
     rl.initWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Music Player");
     defer rl.closeWindow();
-
-    // Cache frequently accessed values to avoid repeated pointer dereferences
-    var current_track = player_state.current_track.?;
 
     while (!rl.windowShouldClose()) {
         rl.beginDrawing();
@@ -229,17 +238,24 @@ fn startMainLoop(alloc: std.mem.Allocator, song_data: SongData) !void {
 
         rl.clearBackground(rl.Color.ray_white);
         rl.drawFPS(10, 10);
-        rl.drawText("Playing Music...", 10, 40, 20, rl.Color.dark_gray);
 
-        const cursor_frame = try current_track.sound.getCursorInPcmFrames();
-        const current_seconds_real: f32 = @as(f32, @floatFromInt(cursor_frame)) / @as(f32, @floatFromInt(current_track.sample_rate));
-        const current_time_adjusted = current_seconds_real * current_track.speed_modifier;
+        const status_text = if (audio_state.is_playing) "Playing..." else "Paused";
+        rl.drawText(status_text, 10, 40, 20, rl.Color.dark_gray);
 
-        rl.drawText(rl.textFormat("Current Position (seconds): %f/%f", .{ current_time_adjusted, player_state.base_track_total_seconds }), 10, 80, 20, rl.Color.dark_gray);
-        rl.drawText(rl.textFormat("Speed Modifier: %f", .{current_track.speed_modifier}), 10, 120, 20, rl.Color.dark_gray);
+        // Get current playback position
+        const cursor_frame = audio_state.current_frame.load(.acquire);
+        const current_seconds: f32 = @as(f32, @floatFromInt(cursor_frame)) / @as(f32, @floatFromInt(sample_rate));
+
+        rl.drawText(rl.textFormat("Position: %.2f / %.2f seconds", .{ current_seconds, total_seconds }), 10, 80, 20, rl.Color.dark_gray);
+
+        // Display current playback speed
+        const current_speed = audio_state.playback_speed.load(.acquire);
+        const speed_percent: i32 = @intFromFloat(current_speed * 100.0);
+        rl.drawText(rl.textFormat("Speed: %d%%", .{speed_percent}), 10, 110, 20, rl.Color.dark_blue);
+        rl.drawText("Up/Down: Adjust speed", 10, 140, 16, rl.Color.gray);
 
         // Draw waveform
-        const wave_frames = wf.getChunksFromPlayheadFrame(wave_form_state, cursor_frame, WINDOW_WIDTH, current_track.channels, current_track.speed_modifier);
+        const wave_frames = wf.getChunksFromPlayheadFrame(wave_form_state, cursor_frame, WINDOW_WIDTH, channels);
         for (wave_frames, 0..) |frame, index| {
             const y_offset = @as(i32, @intFromFloat(frame * FRAME_DISPLAY_SCALE));
             rl.drawLine(@intCast(index), WAVEFORM_Y_CENTER - y_offset, @intCast(index), WAVEFORM_Y_CENTER + y_offset, rl.Color.dark_gray);
@@ -247,73 +263,49 @@ fn startMainLoop(alloc: std.mem.Allocator, song_data: SongData) !void {
 
         // Draw vertical bar at playhead position
         const total_chunks: u64 = @intCast(wave_form_state.chunks.len);
-        const playhead_x = wf.getPlayheadScreenPosition(cursor_frame, WINDOW_WIDTH, current_track.channels, current_track.speed_modifier, total_chunks);
+        const playhead_x = wf.getPlayheadScreenPosition(cursor_frame, WINDOW_WIDTH, channels, total_chunks);
         rl.drawLine(@intCast(playhead_x), PLAYHEAD_Y_START, @intCast(playhead_x), PLAYHEAD_Y_END, rl.Color.red);
 
         // Controls
-        if (rl.isKeyPressed(.down)) {
-            const current_speed = current_track.speed_modifier;
-            var next_track: ?*MusicTrack = current_track;
-            for (player_state.tracks.items) |*track| {
-                if (track.speed_modifier < current_speed) {
-                    if (next_track == current_track or track.speed_modifier > next_track.?.speed_modifier) {
-                        next_track = track;
-                    }
-                }
-            }
-            if (next_track != current_track) {
-                try current_track.sound.stop();
-                // For speed decrease, we need to seek to a later position in the slower track
-                const adjusted_frame = @as(u64, @intFromFloat(@as(f32, @floatFromInt(cursor_frame)) * (current_speed / next_track.?.speed_modifier)));
-                try next_track.?.sound.seekToPcmFrame(adjusted_frame);
-                try next_track.?.sound.start();
-                player_state.current_track = next_track;
-                // Update cached reference
-                current_track = next_track.?;
-            }
-        }
-
-        if (rl.isKeyPressed(.up)) {
-            const current_speed = current_track.speed_modifier;
-            var next_track: ?*MusicTrack = current_track;
-            for (player_state.tracks.items) |*track| {
-                if (track.speed_modifier > current_speed) {
-                    if (next_track == current_track or track.speed_modifier < next_track.?.speed_modifier) {
-                        next_track = track;
-                    }
-                }
-            }
-            if (next_track != current_track) {
-                try current_track.sound.stop();
-                // For speed increase, we need to seek to an earlier position in the faster track
-                const adjusted_frame = @as(u64, @intFromFloat(@as(f32, @floatFromInt(cursor_frame)) * (current_speed / next_track.?.speed_modifier)));
-                try next_track.?.sound.seekToPcmFrame(adjusted_frame);
-                try next_track.?.sound.start();
-                player_state.current_track = next_track;
-                // Update cached reference
-                current_track = next_track.?;
-            }
-        }
-
         if (rl.isKeyPressed(.left)) {
-            const seek_time = std.math.clamp(current_seconds_real - 5 / current_track.speed_modifier, 0.0, player_state.base_track_total_seconds);
-            const seek_frame = @as(u64, @intFromFloat(seek_time * @as(f32, @floatFromInt(current_track.sample_rate))));
-            try current_track.sound.seekToPcmFrame(seek_frame);
+            const seek_time = @max(current_seconds - 5.0, 0.0);
+            const seek_frame = @as(u64, @intFromFloat(seek_time * @as(f32, @floatFromInt(sample_rate))));
+            audio_state.decoder.seekToPCMFrames(seek_frame) catch {};
+            audio_state.current_frame.store(seek_frame, .release);
+            // Clear SoundTouch buffers on seek to avoid audio artifacts
+            audio_state.soundtouch.clear();
         }
 
         if (rl.isKeyPressed(.right)) {
-            const seek_time = std.math.clamp(current_seconds_real + 5 / current_track.speed_modifier, 0.0, player_state.base_track_total_seconds);
-            const seek_frame = @as(u64, @intFromFloat(seek_time * @as(f32, @floatFromInt(current_track.sample_rate))));
-            try current_track.sound.seekToPcmFrame(seek_frame);
+            const seek_time = @min(current_seconds + 5.0, total_seconds);
+            const seek_frame = @as(u64, @intFromFloat(seek_time * @as(f32, @floatFromInt(sample_rate))));
+            audio_state.decoder.seekToPCMFrames(seek_frame) catch {};
+            audio_state.current_frame.store(seek_frame, .release);
+            // Clear SoundTouch buffers on seek to avoid audio artifacts
+            audio_state.soundtouch.clear();
         }
 
         if (rl.isKeyPressed(.space)) {
-            const is_playing = current_track.sound.isPlaying();
-            if (is_playing) {
-                try current_track.sound.stop();
-            } else {
-                try current_track.sound.start();
-            }
+            audio_state.is_playing = !audio_state.is_playing;
+        }
+
+        // Speed controls - Up arrow increases speed, Down arrow decreases speed
+        if (rl.isKeyPressed(.up)) {
+            const new_speed = @min(current_speed + SPEED_STEP, MAX_SPEED);
+            audio_state.playback_speed.store(new_speed, .release);
+            std.debug.print("Speed increased to {d:.0}%\n", .{new_speed * 100.0});
+        }
+
+        if (rl.isKeyPressed(.down)) {
+            const new_speed = @max(current_speed - SPEED_STEP, MIN_SPEED);
+            audio_state.playback_speed.store(new_speed, .release);
+            std.debug.print("Speed decreased to {d:.0}%\n", .{new_speed * 100.0});
+        }
+
+        // Reset speed to 100% with 'R' key
+        if (rl.isKeyPressed(.r)) {
+            audio_state.playback_speed.store(1.0, .release);
+            std.debug.print("Speed reset to 100%\n", .{});
         }
     }
 }

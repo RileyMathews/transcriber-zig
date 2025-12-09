@@ -42,12 +42,12 @@ pub fn deInitWaveFormDisplay(alloc: std.mem.Allocator, display: WaveFormDisplayS
     alloc.free(display.chunks);
 }
 
-pub fn getPlayheadScreenPosition(playhead_frame: u64, chunks_to_display: u64, channels: u32, speed_modifier: f32, total_chunks: u64) u64 {
+pub fn getPlayheadScreenPosition(playhead_frame: u64, chunks_to_display: u64, channels: u32, total_chunks: u64) u64 {
     // Calculate chunk index in floating point to avoid overflow
     const playhead_frame_f: f32 = @floatFromInt(playhead_frame);
     const channels_f: f32 = @floatFromInt(channels);
     const chunk_size_f: f32 = @floatFromInt(FRAMES_PER_CHUNK);
-    const playhead_frame_chunk_f = (playhead_frame_f * channels_f * speed_modifier) / chunk_size_f;
+    const playhead_frame_chunk_f = (playhead_frame_f * channels_f) / chunk_size_f;
     const playhead_frame_chunk: u64 = @intFromFloat(@min(playhead_frame_chunk_f, @as(f32, @floatFromInt(total_chunks - 1))));
     const half_display = chunks_to_display / 2;
 
@@ -68,13 +68,13 @@ pub fn getPlayheadScreenPosition(playhead_frame: u64, chunks_to_display: u64, ch
     return playhead_x;
 }
 
-pub fn getChunksFromPlayheadFrame(display: WaveFormDisplayState, playhead_frame: u64, chunks_to_display: u64, channels: u32, speed_modifier: f32) []f32 {
+pub fn getChunksFromPlayheadFrame(display: WaveFormDisplayState, playhead_frame: u64, chunks_to_display: u64, channels: u32) []f32 {
     const total_chunks: u64 = @intCast(display.chunks.len);
     // Calculate chunk index in floating point to avoid overflow
     const playhead_frame_f: f32 = @floatFromInt(playhead_frame);
     const channels_f: f32 = @floatFromInt(channels);
     const chunk_size_f: f32 = @floatFromInt(FRAMES_PER_CHUNK);
-    const playhead_frame_chunk_f = (playhead_frame_f * channels_f * speed_modifier) / chunk_size_f;
+    const playhead_frame_chunk_f = (playhead_frame_f * channels_f) / chunk_size_f;
     const playhead_frame_chunk: u64 = @intFromFloat(@min(playhead_frame_chunk_f, @as(f32, @floatFromInt(total_chunks - 1))));
 
     const half_display = chunks_to_display / 2;

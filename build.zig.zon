@@ -40,6 +40,10 @@
             .url = "git+https://github.com/zig-gamedev/zaudio#bb93ad665b89e302d4515a36b44cb8e73eaf6766",
             .hash = "zaudio-0.11.0-dev-_M-91kHvPwAlW8MCRI4XiTbTeihqB8Zspgiuw-6Gqgdz",
         },
+        .soundtouch = .{
+            .url = "git+https://codeberg.org/soundtouch/soundtouch#2.4.0",
+            .hash = "N-V-__8AABLGFwDzrUZHdMUH6i6XWmK1w5OIJtF4jcqO_ukk",
+        },
     },
     .paths = .{
         "build.zig",
