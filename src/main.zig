@@ -186,17 +186,9 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
     soundtouch.setChannels(channels);
     soundtouch.setSampleRate(sample_rate);
     soundtouch.setTempo(1.0); // Start at normal speed
+    _ = soundtouch.setSetting(.seekwindow_ms, 15);
 
-    // Configure SoundTouch parameters scaled to sample rate for consistent behavior
-    // across all sample rates (44.1kHz, 48kHz, 96kHz, etc.)
-    const scale_factor: i32 = @max(1, @as(i32, @intCast(sample_rate / 44100)));
-    _ = soundtouch.setSetting(.sequence_ms, 40 * scale_factor);
-    _ = soundtouch.setSetting(.seekwindow_ms, 15 * scale_factor);
-    _ = soundtouch.setSetting(.overlap_ms, 8 * scale_factor);
-
-    // Allocate input buffer for SoundTouch processing - scale for sample rate
-    const buffer_frames = SOUNDTOUCH_BUFFER_FRAMES * @as(u32, @intCast(scale_factor));
-    const input_buffer = try alloc.alloc(f32, buffer_frames * channels);
+    const input_buffer = try alloc.alloc(f32, SOUNDTOUCH_BUFFER_FRAMES * channels);
     defer alloc.free(input_buffer);
 
     // Create audio state
