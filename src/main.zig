@@ -72,10 +72,6 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
         return;
     }
 
-    const current_speed = audio_state.playback_speed.load(.acquire);
-    // TODO: can this just be set when the key is pressed?
-    audio_state.soundtouch.setTempo(current_speed);
-
     var frames_output: u32 = 0;
     var eof_reached = false;
 
@@ -116,6 +112,7 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
     // This gives smooth playhead movement that matches what the user hears
     // At tempo 2.0, each output frame represents 2 input frames of progress
     // At tempo 0.5, each output frame represents 0.5 input frames of progress
+    const current_speed = audio_state.playback_speed.load(.acquire);
     const position_advance: u64 = @intFromFloat(@as(f32, @floatFromInt(frames_output)) * current_speed);
     const current = audio_state.current_frame.load(.acquire);
     audio_state.current_frame.store(current + position_advance, .release);
@@ -298,12 +295,14 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
         if (rl.isKeyPressed(.up)) {
             const new_speed = @min(current_speed + SPEED_STEP, MAX_SPEED);
             audio_state.playback_speed.store(new_speed, .release);
+            audio_state.soundtouch.setTempo(new_speed);
             std.debug.print("Speed increased to {d:.0}%\n", .{new_speed * 100.0});
         }
 
         if (rl.isKeyPressed(.down)) {
             const new_speed = @max(current_speed - SPEED_STEP, MIN_SPEED);
             audio_state.playback_speed.store(new_speed, .release);
+            audio_state.soundtouch.setTempo(new_speed);
             std.debug.print("Speed decreased to {d:.0}%\n", .{new_speed * 100.0});
         }
 
