@@ -15,16 +15,17 @@ const AudioState = struct {
     current_frame: std.atomic.Value(u64),
     // SoundTouch processor for time stretching
     soundtouch: st.SoundTouch,
-    // Current playback speed (1.0 = normal, 0.5 = half speed, 2.0 = double speed)
-    playback_speed: std.atomic.Value(f32),
+    // playback speed represented as an integer value of percentage.
+    // should be converted to a float when passed to soundtouch
+    playback_speed: std.atomic.Value(u8),
     // Input buffer for reading from decoder before processing
     input_buffer: []f32,
 };
 
 // Speed adjustment constants
-const SPEED_STEP: f32 = 0.05; // 5% speed change per key press
-const MIN_SPEED: f32 = 0.25; // Minimum 25% speed
-const MAX_SPEED: f32 = 2.0; // Maximum 200% speed
+const SPEED_STEP: u8 = 5; // 5% speed change per key press
+const MIN_SPEED: u8 = 25; // Minimum 25% speed
+const MAX_SPEED: u8 = 200; // Maximum 200% speed
 
 // Buffer size for SoundTouch processing
 const SOUNDTOUCH_BUFFER_FRAMES: u32 = 4096;
@@ -112,7 +113,7 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
     // This gives smooth playhead movement that matches what the user hears
     // At tempo 2.0, each output frame represents 2 input frames of progress
     // At tempo 0.5, each output frame represents 0.5 input frames of progress
-    const current_speed = audio_state.playback_speed.load(.acquire);
+    const current_speed = getFloatSpeedFromInt(audio_state.playback_speed.load(.acquire));
     const position_advance: u64 = @intFromFloat(@as(f32, @floatFromInt(frames_output)) * current_speed);
     const current = audio_state.current_frame.load(.acquire);
     audio_state.current_frame.store(current + position_advance, .release);
@@ -198,7 +199,7 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
         .is_playing = true,
         .current_frame = std.atomic.Value(u64).init(0),
         .soundtouch = soundtouch,
-        .playback_speed = std.atomic.Value(f32).init(1.0),
+        .playback_speed = std.atomic.Value(u8).init(100),
         .input_buffer = input_buffer,
     };
 
@@ -252,8 +253,7 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
 
         // Display current playback speed
         const current_speed = audio_state.playback_speed.load(.acquire);
-        const speed_percent: i32 = @intFromFloat(current_speed * 100.0);
-        rl.drawText(rl.textFormat("Speed: %d%%", .{speed_percent}), 10, 110, 20, rl.Color.dark_blue);
+        rl.drawText(rl.textFormat("Speed: %d%%", .{current_speed}), 10, 110, 20, rl.Color.dark_blue);
         rl.drawText("Up/Down: Adjust speed", 10, 140, 16, rl.Color.gray);
 
         // Draw waveform
@@ -295,21 +295,20 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
         if (rl.isKeyPressed(.up)) {
             const new_speed = @min(current_speed + SPEED_STEP, MAX_SPEED);
             audio_state.playback_speed.store(new_speed, .release);
-            audio_state.soundtouch.setTempo(new_speed);
-            std.debug.print("Speed increased to {d:.0}%\n", .{new_speed * 100.0});
+            audio_state.soundtouch.setTempo(getFloatSpeedFromInt(new_speed));
+            std.debug.print("Speed increased to {d:.0}%\n", .{new_speed});
         }
 
         if (rl.isKeyPressed(.down)) {
             const new_speed = @max(current_speed - SPEED_STEP, MIN_SPEED);
             audio_state.playback_speed.store(new_speed, .release);
-            audio_state.soundtouch.setTempo(new_speed);
-            std.debug.print("Speed decreased to {d:.0}%\n", .{new_speed * 100.0});
-        }
-
-        // Reset speed to 100% with 'R' key
-        if (rl.isKeyPressed(.r)) {
-            audio_state.playback_speed.store(1.0, .release);
-            std.debug.print("Speed reset to 100%\n", .{});
+            audio_state.soundtouch.setTempo(getFloatSpeedFromInt(new_speed));
+            std.debug.print("Speed decreased to {d:.0}%\n", .{new_speed});
         }
     }
+}
+
+pub fn getFloatSpeedFromInt(speed: u8) f32 {
+    const float_speed: f32 = @floatFromInt(speed);
+    return float_speed / 100.0;
 }
