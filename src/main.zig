@@ -53,10 +53,18 @@ fn renderFileError(filePath: []const u8) void {
     }
 }
 
+var debug_callback_count: u32 = 0;
+
 fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, frame_count: u32) callconv(.c) void {
     const audio_state: *AudioState = @ptrCast(@alignCast(device.getUserData()));
     const output_ptr: [*]f32 = @ptrCast(@alignCast(output));
     const total_output_samples = frame_count * audio_state.channels;
+
+    // Debug: print callback info occasionally
+    debug_callback_count += 1;
+    if (debug_callback_count == 1 or debug_callback_count % 500 == 0) {
+        std.debug.print("Callback #{}: frame_count={}, channels={}, sample_rate={}\n", .{ debug_callback_count, frame_count, audio_state.channels, audio_state.sample_rate });
+    }
 
     if (!audio_state.is_playing) {
         // Output silence when paused
@@ -65,7 +73,7 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
     }
 
     const current_speed = audio_state.playback_speed.load(.acquire);
-    // TODO: can this not just be set when the speed changes?
+    // TODO: can this just be set when the key is pressed?
     audio_state.soundtouch.setTempo(current_speed);
 
     var frames_output: u32 = 0;
@@ -87,7 +95,9 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
 
         // Need more input - read from decoder
         // Read enough to account for tempo (at 2x speed we need 2x input)
-        const frames_to_read: u32 = @min(SOUNDTOUCH_BUFFER_FRAMES, frame_count * 2);
+        // Use the actual input buffer size (which may be scaled for high sample rates)
+        const max_buffer_frames: u32 = @intCast(audio_state.input_buffer.len / audio_state.channels);
+        const frames_to_read: u32 = @min(max_buffer_frames, frame_count * 2);
         const frames_read = audio_state.decoder.readPCMFrames(audio_state.input_buffer.ptr, frames_to_read) catch 0;
 
         if (frames_read == 0) {
@@ -177,8 +187,16 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
     soundtouch.setSampleRate(sample_rate);
     soundtouch.setTempo(1.0); // Start at normal speed
 
-    // Allocate input buffer for SoundTouch processing
-    const input_buffer = try alloc.alloc(f32, SOUNDTOUCH_BUFFER_FRAMES * channels);
+    // Configure SoundTouch parameters scaled to sample rate for consistent behavior
+    // across all sample rates (44.1kHz, 48kHz, 96kHz, etc.)
+    const scale_factor: i32 = @max(1, @as(i32, @intCast(sample_rate / 44100)));
+    _ = soundtouch.setSetting(.sequence_ms, 40 * scale_factor);
+    _ = soundtouch.setSetting(.seekwindow_ms, 15 * scale_factor);
+    _ = soundtouch.setSetting(.overlap_ms, 8 * scale_factor);
+
+    // Allocate input buffer for SoundTouch processing - scale for sample rate
+    const buffer_frames = SOUNDTOUCH_BUFFER_FRAMES * @as(u32, @intCast(scale_factor));
+    const input_buffer = try alloc.alloc(f32, buffer_frames * channels);
     defer alloc.free(input_buffer);
 
     // Create audio state
