@@ -184,7 +184,6 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
     soundtouch.setChannels(channels);
     soundtouch.setSampleRate(sample_rate);
     soundtouch.setTempo(1.0); // Start at normal speed
-    _ = soundtouch.setSetting(.seekwindow_ms, 15);
 
     const input_buffer = try alloc.alloc(f32, SOUNDTOUCH_BUFFER_FRAMES * channels);
     defer alloc.free(input_buffer);
