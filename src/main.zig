@@ -20,6 +20,9 @@ const AudioState = struct {
     playback_speed: std.atomic.Value(u8),
     // Input buffer for reading from decoder before processing
     input_buffer: []f32,
+    loop_start: ?u64,
+    loop_end: ?u64,
+    is_looping: bool,
 };
 
 // Speed adjustment constants
@@ -200,6 +203,9 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
         .soundtouch = soundtouch,
         .playback_speed = std.atomic.Value(u8).init(100),
         .input_buffer = input_buffer,
+        .is_looping = false,
+        .loop_start = undefined,
+        .loop_end = undefined,
     };
 
     // Configure and create device
@@ -246,6 +252,11 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
 
         // Get current playback position
         const cursor_frame = audio_state.current_frame.load(.acquire);
+
+        if (audio_state.is_looping and cursor_frame > audio_state.loop_end orelse audio_state.total_frames) {
+            audio_state.current_frame.store(audio_state.loop_start orelse 0, .release);
+            audio_state.decoder.seekToPCMFrames(audio_state.loop_start orelse 0) catch {};
+        }
         const current_seconds: f32 = @as(f32, @floatFromInt(cursor_frame)) / @as(f32, @floatFromInt(sample_rate));
 
         rl.drawText(rl.textFormat("Position: %.2f / %.2f seconds", .{ current_seconds, total_seconds }), 10, 80, 20, rl.Color.dark_gray);
@@ -330,6 +341,18 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
             std.debug.print("Jumping to frame: {}", .{frame});
             audio_state.decoder.seekToPCMFrames(frame) catch {};
             audio_state.current_frame.store(frame, .release);
+        }
+
+        if (rl.isKeyPressed(.s)) {
+            audio_state.loop_start = cursor_frame;
+        }
+
+        if (rl.isKeyPressed(.e)) {
+            audio_state.loop_end = cursor_frame;
+        }
+
+        if (rl.isKeyPressed(.l)) {
+            audio_state.is_looping = !audio_state.is_looping;
         }
     }
 }
