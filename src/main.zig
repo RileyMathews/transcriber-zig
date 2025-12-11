@@ -321,6 +321,16 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
 
             wf.scrollDisplay(&wave_form_state, direction, WINDOW_WIDTH);
         }
+
+        if (rl.isMouseButtonPressed(.left)) {
+            const mouse_position = rl.getMousePosition();
+            std.debug.print("Mouse X: {}\n", .{mouse_position.x});
+            const x: u64 = @intFromFloat(mouse_position.x);
+            const frame = wf.getFrameIndex(&wave_form_state, x, channels);
+            std.debug.print("Jumping to frame: {}", .{frame});
+            audio_state.decoder.seekToPCMFrames(frame) catch {};
+            audio_state.current_frame.store(frame, .release);
+        }
     }
 }
 

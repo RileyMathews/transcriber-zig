@@ -159,3 +159,8 @@ pub fn scrollDisplay(displayState: *WaveFormDisplayState, scroll_direction: Scro
     std.debug.print("new start chunk after scroll: {}", .{new_start_chunk});
     displayState.startChunk = new_start_chunk;
 }
+
+pub fn getFrameIndex(displayState: *WaveFormDisplayState, x_pos: u64, channels: u32) u64 {
+    const index = x_pos + displayState.startChunk;
+    return index * FRAMES_PER_CHUNK / channels;
+}
