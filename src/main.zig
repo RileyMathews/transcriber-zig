@@ -12,6 +12,7 @@ const AudioState = struct {
     total_seconds: f32,
     is_playing: bool,
     // Current playback position in frames (updated by audio callback)
+    // TODO: is this needed? We can pull current PCM frame from decoder
     current_frame: std.atomic.Value(u64),
     // SoundTouch processor for time stretching
     soundtouch: st.SoundTouch,
@@ -96,8 +97,7 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
         // Need more input - read from decoder
         // Read enough to account for tempo (at 2x speed we need 2x input)
         // Use the actual input buffer size (which may be scaled for high sample rates)
-        const max_buffer_frames: u32 = @intCast(audio_state.input_buffer.len / audio_state.channels);
-        const frames_to_read: u32 = @min(max_buffer_frames, frame_count * 2);
+        const frames_to_read: u32 = @min(SOUNDTOUCH_BUFFER_FRAMES, frame_count * 2);
         const frames_read = audio_state.decoder.readPCMFrames(audio_state.input_buffer.ptr, frames_to_read) catch 0;
 
         if (frames_read == 0) {
@@ -188,7 +188,8 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
     soundtouch.setSampleRate(sample_rate);
     soundtouch.setTempo(1.0); // Start at normal speed
 
-    const input_buffer = try alloc.alloc(f32, SOUNDTOUCH_BUFFER_FRAMES * channels);
+    // TODO: can this be a comptime constant???
+    const input_buffer = try alloc.alloc(f32, SOUNDTOUCH_BUFFER_FRAMES);
     defer alloc.free(input_buffer);
 
     // Create audio state
