@@ -220,7 +220,7 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
     const all_samples = try wf.loadAudioBufferFromDecoder(alloc, waveform_decoder, total_frames, channels);
     defer alloc.free(all_samples);
 
-    const wave_form_state = try wf.initWaveFormState(alloc, all_samples);
+    var wave_form_state = try wf.initWaveFormState(alloc, all_samples);
     defer wf.deInitWaveFormDisplay(alloc, wave_form_state);
 
     // Start playback
@@ -256,7 +256,7 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
         rl.drawText("Up/Down: Adjust speed", 10, 140, 16, rl.Color.gray);
 
         // Draw waveform
-        const wave_frames = wf.getChunksFromPlayheadFrame(wave_form_state, cursor_frame, WINDOW_WIDTH, channels);
+        const wave_frames = wf.getChunksForRendering(&wave_form_state, cursor_frame, WINDOW_WIDTH, channels);
         for (wave_frames, 0..) |frame, index| {
             const y_offset = @as(i32, @intFromFloat(frame * FRAME_DISPLAY_SCALE));
             rl.drawLine(@intCast(index), WAVEFORM_Y_CENTER - y_offset, @intCast(index), WAVEFORM_Y_CENTER + y_offset, rl.Color.dark_gray);
@@ -264,7 +264,7 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
 
         // Draw vertical bar at playhead position
         const total_chunks: u64 = @intCast(wave_form_state.chunks.len);
-        const playhead_x = wf.getPlayheadScreenPosition(cursor_frame, WINDOW_WIDTH, channels, total_chunks);
+        const playhead_x = wf.getPlayheadScreenPosition(wave_form_state, cursor_frame, WINDOW_WIDTH, channels, total_chunks);
         rl.drawLine(@intCast(playhead_x), PLAYHEAD_Y_START, @intCast(playhead_x), PLAYHEAD_Y_END, rl.Color.red);
 
         // Controls
@@ -303,6 +303,23 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
             audio_state.playback_speed.store(new_speed, .release);
             audio_state.soundtouch.setTempo(getFloatSpeedFromInt(new_speed));
             std.debug.print("Speed decreased to {d:.0}%\n", .{new_speed});
+        }
+
+        if (rl.isKeyPressed(.f)) {
+            wave_form_state.displayMode = .FollowingPlayHead;
+        }
+
+        const mouse_wheel_move: i64 = @intFromFloat(rl.getMouseWheelMove());
+        if (mouse_wheel_move != 0) {
+            std.debug.print("mouse wheel move {}\n", .{mouse_wheel_move});
+            var direction: wf.ScrollDirection = undefined;
+            if (mouse_wheel_move < 0) { 
+                direction = .Down;
+            } else {
+                direction = .Up;
+            }
+
+            wf.scrollDisplay(&wave_form_state, direction, WINDOW_WIDTH);
         }
     }
 }
