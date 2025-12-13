@@ -51,34 +51,14 @@ pub fn deInitWaveFormDisplay(alloc: std.mem.Allocator, display: WaveFormDisplayS
     alloc.free(display.chunks);
 }
 
-pub fn getPlayheadScreenPosition(display_state: WaveFormDisplayState, playhead_frame: u64, chunks_to_display: u64, channels: u32, total_chunks: u64) u64 {
+pub fn getXCoordFromPCMFrame(display_state: WaveFormDisplayState, playhead_frame: u64, channels: u32, total_chunks: u64) u64 {
     // Calculate chunk index in floating point to avoid overflow
     const playhead_frame_f: f32 = @floatFromInt(playhead_frame);
     const channels_f: f32 = @floatFromInt(channels);
     const chunk_size_f: f32 = @floatFromInt(FRAMES_PER_CHUNK);
     const playhead_frame_chunk_f = (playhead_frame_f * channels_f) / chunk_size_f;
     const playhead_frame_chunk: u64 = @intFromFloat(@min(playhead_frame_chunk_f, @as(f32, @floatFromInt(total_chunks - 1))));
-    const half_display = chunks_to_display / 2;
-
-    if (display_state.displayMode == .FreeFloating) {
-        return playhead_frame_chunk -| display_state.startChunk;
-    }
-
-    var playhead_x: u64 = undefined;
-    if (playhead_frame_chunk <= half_display) {
-        playhead_x = playhead_frame_chunk;
-    } else if (playhead_frame_chunk >= total_chunks - half_display) {
-        const remaining_chunks = total_chunks - playhead_frame_chunk;
-        if (remaining_chunks <= half_display) {
-            playhead_x = half_display + (half_display - remaining_chunks);
-        } else {
-            playhead_x = half_display;
-        }
-    } else {
-        playhead_x = half_display;
-    }
-
-    return playhead_x;
+    return playhead_frame_chunk -| display_state.startChunk;
 }
 
 pub fn getChunksForRendering(display: *WaveFormDisplayState, playhead_frame: u64, chunks_to_display: u64, channels: u32) []f32 {

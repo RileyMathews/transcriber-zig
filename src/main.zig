@@ -276,8 +276,18 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
 
         // Draw vertical bar at playhead position
         const total_chunks: u64 = @intCast(wave_form_state.chunks.len);
-        const playhead_x = wf.getPlayheadScreenPosition(wave_form_state, cursor_frame, WINDOW_WIDTH, channels, total_chunks);
+        const playhead_x = wf.getXCoordFromPCMFrame(wave_form_state, cursor_frame, channels, total_chunks);
         rl.drawLine(@intCast(playhead_x), PLAYHEAD_Y_START, @intCast(playhead_x), PLAYHEAD_Y_END, rl.Color.red);
+
+        if (audio_state.loop_start) |pcm_frame| {
+            const loop_start_x = wf.getXCoordFromPCMFrame(wave_form_state, pcm_frame, channels, total_chunks);
+            rl.drawLine(@intCast(loop_start_x), PLAYHEAD_Y_START, @intCast(loop_start_x), PLAYHEAD_Y_END, rl.Color.blue);
+        }
+
+        if (audio_state.loop_end) |pcm_frame| {
+            const loop_end_x = wf.getXCoordFromPCMFrame(wave_form_state, pcm_frame, channels, total_chunks);
+            rl.drawLine(@intCast(loop_end_x), PLAYHEAD_Y_START, @intCast(loop_end_x), PLAYHEAD_Y_END, rl.Color.blue);
+        }
 
         // Controls
         if (rl.isKeyPressed(.left)) {
