@@ -19,6 +19,8 @@ const AudioState = struct {
     // playback speed represented as an integer value of percentage.
     // should be converted to a float when passed to soundtouch
     playback_speed: std.atomic.Value(u8),
+    // TODO: soundtouch has a version of the pitch change function that takes an int.
+    // figure out how to call that function instead and make this an int type.
     playback_pitch_shift_semitones: f32,
     // Input buffer for reading from decoder before processing
     input_buffer: []f32,
