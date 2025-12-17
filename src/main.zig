@@ -264,8 +264,8 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
 
         // Display current playback speed
         const current_speed = audio_state.playback_speed.load(.acquire);
-        // rl.drawText(rl.textFormat("Speed: %d%%", .{current_speed}), 10, 110, 20, rl.Color.dark_blue);
-        rl.drawText(rl.textFormat("Pitch: %f", .{audio_state.playback_pitch_shift_semitones}), 10, 110, 20, rl.Color.dark_blue);
+        rl.drawText(rl.textFormat("Speed: %d%%", .{current_speed}), 10, 110, 20, rl.Color.dark_blue);
+        rl.drawText(rl.textFormat("Pitch: %f", .{audio_state.playback_pitch_shift_semitones}), 150, 110, 20, rl.Color.dark_blue);
         rl.drawText("Up/Down: Adjust speed", 10, 140, 16, rl.Color.gray);
 
         // Draw waveform
