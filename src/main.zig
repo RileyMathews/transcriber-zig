@@ -19,6 +19,7 @@ const AudioState = struct {
     // playback speed represented as an integer value of percentage.
     // should be converted to a float when passed to soundtouch
     playback_speed: std.atomic.Value(u8),
+    playback_pitch_shift_semitones: f32,
     // Input buffer for reading from decoder before processing
     input_buffer: []f32,
     loop_start: ?u64,
@@ -201,6 +202,7 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
         .current_frame = std.atomic.Value(u64).init(0),
         .soundtouch = soundtouch,
         .playback_speed = std.atomic.Value(u8).init(100),
+        .playback_pitch_shift_semitones = 0,
         .input_buffer = input_buffer,
         .is_looping = false,
         .loop_start = undefined,
@@ -262,7 +264,8 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
 
         // Display current playback speed
         const current_speed = audio_state.playback_speed.load(.acquire);
-        rl.drawText(rl.textFormat("Speed: %d%%", .{current_speed}), 10, 110, 20, rl.Color.dark_blue);
+        // rl.drawText(rl.textFormat("Speed: %d%%", .{current_speed}), 10, 110, 20, rl.Color.dark_blue);
+        rl.drawText(rl.textFormat("Pitch: %f", .{audio_state.playback_pitch_shift_semitones}), 10, 110, 20, rl.Color.dark_blue);
         rl.drawText("Up/Down: Adjust speed", 10, 140, 16, rl.Color.gray);
 
         // Draw waveform
@@ -312,17 +315,27 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
 
         // Speed controls - Up arrow increases speed, Down arrow decreases speed
         if (rl.isKeyPressed(.up)) {
-            const new_speed = @min(current_speed + SPEED_STEP, MAX_SPEED);
-            audio_state.playback_speed.store(new_speed, .release);
-            audio_state.soundtouch.setTempo(getFloatSpeedFromInt(new_speed));
-            std.debug.print("Speed increased to {d:.0}%\n", .{new_speed});
+            if (rl.isKeyDown(.left_shift)) {
+                audio_state.playback_pitch_shift_semitones = audio_state.playback_pitch_shift_semitones + 1;
+                audio_state.soundtouch.setPitchSemiTones(audio_state.playback_pitch_shift_semitones);
+            } else {
+                const new_speed = @min(current_speed + SPEED_STEP, MAX_SPEED);
+                audio_state.playback_speed.store(new_speed, .release);
+                audio_state.soundtouch.setTempo(getFloatSpeedFromInt(new_speed));
+                std.debug.print("Speed increased to {d:.0}%\n", .{new_speed});
+            }
         }
 
         if (rl.isKeyPressed(.down)) {
-            const new_speed = @max(current_speed - SPEED_STEP, MIN_SPEED);
-            audio_state.playback_speed.store(new_speed, .release);
-            audio_state.soundtouch.setTempo(getFloatSpeedFromInt(new_speed));
-            std.debug.print("Speed decreased to {d:.0}%\n", .{new_speed});
+            if (rl.isKeyDown(.left_shift)) {
+                audio_state.playback_pitch_shift_semitones = audio_state.playback_pitch_shift_semitones - 1;
+                audio_state.soundtouch.setPitchSemiTones(audio_state.playback_pitch_shift_semitones);
+            } else {
+                const new_speed = @max(current_speed - SPEED_STEP, MIN_SPEED);
+                audio_state.playback_speed.store(new_speed, .release);
+                audio_state.soundtouch.setTempo(getFloatSpeedFromInt(new_speed));
+                std.debug.print("Speed decreased to {d:.0}%\n", .{new_speed});
+            }
         }
 
         if (rl.isKeyPressed(.f)) {
