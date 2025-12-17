@@ -112,6 +112,9 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
     // This gives smooth playhead movement that matches what the user hears
     // At tempo 2.0, each output frame represents 2 input frames of progress
     // At tempo 0.5, each output frame represents 0.5 input frames of progress
+    // TODO: reaxmine this AI generated code.
+    // Does playback speed really have to be its own thread safe variable?
+    // Can we just use the speed variable in soundtouch?
     const current_speed = getFloatSpeedFromInt(audio_state.playback_speed.load(.acquire));
     const position_advance: u64 = @intFromFloat(@as(f32, @floatFromInt(frames_output)) * current_speed);
     const current = audio_state.current_frame.load(.acquire);
