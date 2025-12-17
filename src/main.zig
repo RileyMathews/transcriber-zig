@@ -31,9 +31,6 @@ const SPEED_STEP: u8 = 5; // 5% speed change per key press
 const MIN_SPEED: u8 = 25; // Minimum 25% speed
 const MAX_SPEED: u8 = 200; // Maximum 200% speed
 
-// Buffer size for SoundTouch processing
-const SOUNDTOUCH_BUFFER_FRAMES: u32 = 4096;
-
 // Window dimensions
 const WINDOW_WIDTH = 800;
 const WINDOW_HEIGHT = 600;
@@ -97,7 +94,7 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
         // Need more input - read from decoder
         // Read enough to account for tempo (at 2x speed we need 2x input)
         // Use the actual input buffer size (which may be scaled for high sample rates)
-        const frames_to_read: u32 = @min(SOUNDTOUCH_BUFFER_FRAMES, frame_count * 2);
+        const frames_to_read: u32 = frame_count * audio_state.channels;
         const frames_read = audio_state.decoder.readPCMFrames(audio_state.input_buffer.ptr, frames_to_read) catch 0;
 
         if (frames_read == 0) {
@@ -106,9 +103,8 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
             audio_state.soundtouch.flush();
         } else {
             // Feed samples to SoundTouch
-            const frames_read_u32: u32 = @intCast(frames_read);
-            const input_slice = audio_state.input_buffer[0 .. frames_read_u32 * audio_state.channels];
-            audio_state.soundtouch.putSamples(input_slice, frames_read_u32);
+            const input_slice = audio_state.input_buffer[0 .. frames_to_read];
+            audio_state.soundtouch.putSamples(input_slice, frames_to_read);
         }
     }
 
@@ -188,8 +184,7 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
     soundtouch.setSampleRate(sample_rate);
     soundtouch.setTempo(1.0); // Start at normal speed
 
-    // TODO: can this be a comptime constant???
-    const input_buffer = try alloc.alloc(f32, SOUNDTOUCH_BUFFER_FRAMES);
+    const input_buffer = try alloc.alloc(f32, sample_rate);
     defer alloc.free(input_buffer);
 
     // Create audio state
