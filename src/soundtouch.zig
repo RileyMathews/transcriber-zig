@@ -130,14 +130,22 @@ pub const SoundTouch = struct {
 pub const Setting = enum(i32) {
     /// Enable/disable anti-alias filter (1 = enabled, 0 = disabled)
     use_aa_filter = 0,
-    /// Sequence duration in ms for time-stretch algorithm
-    sequence_ms = 1,
-    /// Seek window duration in ms for time-stretch algorithm
-    seekwindow_ms = 2,
-    /// Overlap duration in ms for time-stretch algorithm
-    overlap_ms = 3,
+    /// FIR anti-alias filter length in samples
+    aa_filter_length = 1,
     /// Enable/disable quick seek mode (1 = enabled, 0 = disabled)
-    use_quickseek = 4,
+    use_quickseek = 2,
+    /// Sequence duration in ms for time-stretch algorithm
+    sequence_ms = 3,
+    /// Seek window duration in ms for time-stretch algorithm
+    seekwindow_ms = 4,
+    /// Overlap duration in ms for time-stretch algorithm
+    overlap_ms = 5,
+    /// Approximate nominal input sequence length in samples (read-only)
+    nominal_input_sequence = 6,
+    /// Approximate nominal output sequence length in samples (read-only)
+    nominal_output_sequence = 7,
+    /// Initial pipeline latency in samples before first output (read-only)
+    initial_latency = 8,
 };
 
 /// Get the SoundTouch library version string

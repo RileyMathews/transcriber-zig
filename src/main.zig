@@ -61,8 +61,11 @@ fn renderFileError(filePath: []const u8) void {
 var debug_callback_count: u32 = 0;
 
 fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, frames_requested: u32) callconv(.c) void {
+    // This callback runs on the audio thread. It must be fast and deterministic:
+    // produce exactly `frames_requested` output frames or fill with silence.
     const audio_state: *AudioState = @ptrCast(@alignCast(device.getUserData()));
     const output_ptr: [*]f32 = @ptrCast(@alignCast(output));
+    // `frames_requested` is in PCM frames; output buffer length is samples.
     const total_output_samples = frames_requested * audio_state.channels;
 
     // Debug: print callback info occasionally
@@ -72,7 +75,7 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
     }
 
     if (!audio_state.is_playing) {
-        // Output silence when paused
+        // Paused path: always write silence so the device callback never underruns.
         @memset(output_ptr[0..total_output_samples], 0);
         return;
     }
@@ -80,12 +83,17 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
     var frames_output: u32 = 0;
     var eof_reached = false;
 
-    // Keep feeding SoundTouch and retrieving output until we have enough
+    // Main fill loop:
+    // 1) drain already-processed samples from SoundTouch
+    // 2) if not enough output yet, decode more input and feed SoundTouch
+    // Repeat until this callback's output buffer is full or EOF is reached.
     while (frames_output < frames_requested and !eof_reached) {
-        // First check if SoundTouch has output available
+        // Prefer draining SoundTouch first to avoid unnecessary decoder reads.
         const available = audio_state.soundtouch.numSamples();
         if (available > 0) {
+            // Only take as many frames as this callback still needs.
             const frames_to_receive = @min(available, frames_requested - frames_output);
+            // `receiveSamples` writes interleaved floats starting at this offset.
             const output_offset = frames_output * audio_state.channels;
             const output_slice = output_ptr[output_offset..total_output_samples];
             const received = audio_state.soundtouch.receiveSamples(output_slice, frames_to_receive);
@@ -94,17 +102,19 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
             if (frames_output >= frames_requested) break;
         }
 
-        // Need more input - read from decoder
-        // Read enough to account for tempo (at 2x speed we need 2x input)
-        // Use the actual input buffer size (which may be scaled for high sample rates)
+        // SoundTouch does not have enough output yet, so decode one callback-sized
+        // chunk and push it into SoundTouch's input queue.
+        // Note: this is frames, not samples.
         const frames_read = audio_state.decoder.readPCMFrames(audio_state.input_buffer.ptr, frames_requested) catch 0;
 
         if (frames_read == 0) {
             eof_reached = true;
-            // End of file - flush remaining samples from SoundTouch
+            // No more decoder input: flush SoundTouch so delayed tail samples can
+            // still be emitted in this callback/pass.
             audio_state.soundtouch.flush();
         } else {
-            // Feed samples to SoundTouch
+            // Hand decoded frames to SoundTouch. The slice is an interleaved sample
+            // buffer; `num_frames` tells SoundTouch how many frames to consume.
             audio_state.soundtouch.putSamples(audio_state.input_buffer, @intCast(frames_read));
         }
     }
@@ -121,7 +131,8 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
     const current = audio_state.current_frame.load(.acquire);
     audio_state.current_frame.store(current + position_advance, .release);
 
-    // Fill any remaining output with silence
+    // If EOF or an underrun leaves part of the device buffer unfilled, zero the
+    // remainder so miniaudio always receives valid output.
     if (frames_output < frames_requested) {
         const start_sample = frames_output * audio_state.channels;
         @memset(output_ptr[start_sample..total_output_samples], 0);
@@ -350,7 +361,7 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
         if (mouse_wheel_move != 0) {
             std.debug.print("mouse wheel move {}\n", .{mouse_wheel_move});
             var direction: wf.ScrollDirection = undefined;
-            if (mouse_wheel_move < 0) { 
+            if (mouse_wheel_move < 0) {
                 direction = .Down;
             } else {
                 direction = .Up;
