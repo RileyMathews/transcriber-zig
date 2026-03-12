@@ -60,15 +60,15 @@ fn renderFileError(filePath: []const u8) void {
 
 var debug_callback_count: u32 = 0;
 
-fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, frame_count: u32) callconv(.c) void {
+fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, frames_requested: u32) callconv(.c) void {
     const audio_state: *AudioState = @ptrCast(@alignCast(device.getUserData()));
     const output_ptr: [*]f32 = @ptrCast(@alignCast(output));
-    const total_output_samples = frame_count * audio_state.channels;
+    const total_output_samples = frames_requested * audio_state.channels;
 
     // Debug: print callback info occasionally
     debug_callback_count += 1;
     if (debug_callback_count == 1 or debug_callback_count % 500 == 0) {
-        std.debug.print("Callback #{}: frame_count={}, channels={}, sample_rate={}\n", .{ debug_callback_count, frame_count, audio_state.channels, audio_state.sample_rate });
+        std.debug.print("Callback #{}: frame_count={}, channels={}, sample_rate={}\n", .{ debug_callback_count, frames_requested, audio_state.channels, audio_state.sample_rate });
     }
 
     if (!audio_state.is_playing) {
@@ -81,24 +81,23 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
     var eof_reached = false;
 
     // Keep feeding SoundTouch and retrieving output until we have enough
-    while (frames_output < frame_count and !eof_reached) {
+    while (frames_output < frames_requested and !eof_reached) {
         // First check if SoundTouch has output available
         const available = audio_state.soundtouch.numSamples();
         if (available > 0) {
-            const frames_to_receive = @min(available, frame_count - frames_output);
+            const frames_to_receive = @min(available, frames_requested - frames_output);
             const output_offset = frames_output * audio_state.channels;
             const output_slice = output_ptr[output_offset..total_output_samples];
             const received = audio_state.soundtouch.receiveSamples(output_slice, frames_to_receive);
             frames_output += received;
 
-            if (frames_output >= frame_count) break;
+            if (frames_output >= frames_requested) break;
         }
 
         // Need more input - read from decoder
         // Read enough to account for tempo (at 2x speed we need 2x input)
         // Use the actual input buffer size (which may be scaled for high sample rates)
-        const frames_to_read: u32 = frame_count * audio_state.channels;
-        const frames_read = audio_state.decoder.readPCMFrames(audio_state.input_buffer.ptr, frames_to_read) catch 0;
+        const frames_read = audio_state.decoder.readPCMFrames(audio_state.input_buffer.ptr, frames_requested) catch 0;
 
         if (frames_read == 0) {
             eof_reached = true;
@@ -106,8 +105,7 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
             audio_state.soundtouch.flush();
         } else {
             // Feed samples to SoundTouch
-            const input_slice = audio_state.input_buffer[0 .. frames_to_read];
-            audio_state.soundtouch.putSamples(input_slice, frames_to_read);
+            audio_state.soundtouch.putSamples(audio_state.input_buffer, @intCast(frames_read));
         }
     }
 
@@ -124,7 +122,7 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
     audio_state.current_frame.store(current + position_advance, .release);
 
     // Fill any remaining output with silence
-    if (frames_output < frame_count) {
+    if (frames_output < frames_requested) {
         const start_sample = frames_output * audio_state.channels;
         @memset(output_ptr[start_sample..total_output_samples], 0);
     }
@@ -190,7 +188,10 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
     soundtouch.setSampleRate(sample_rate);
     soundtouch.setTempo(1.0); // Start at normal speed
 
-    const input_buffer = try alloc.alloc(f32, sample_rate);
+    // setting anything lower here appears to crash pulse audio
+    const buffer_size = 1024 * channels;
+
+    const input_buffer = try alloc.alloc(f32, buffer_size);
     defer alloc.free(input_buffer);
 
     // Create audio state
@@ -214,6 +215,7 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
     // Configure and create device
     var device_config = za.Device.Config.init(.playback);
     device_config.playback.format = .float32;
+    device_config.period_size_in_frames = 1024;
     device_config.playback.channels = channels;
     device_config.sample_rate = sample_rate;
     device_config.data_callback = dataCallback;
