@@ -199,6 +199,32 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
+    const watch_exe = b.addExecutable(.{
+        .name = "transcriber-watch",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/watch.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+        }),
+    });
+
+    const watch_step = b.step("watch", "Rebuild and restart the app when source files change");
+    const watch_cmd = b.addRunArtifact(watch_exe);
+    watch_cmd.setCwd(b.path("."));
+    watch_cmd.stdio = .inherit;
+    watch_cmd.disable_zig_progress = true;
+    watch_cmd.addArgs(&.{
+        "--zig",
+        b.graph.zig_exe,
+        "--app",
+        b.pathJoin(&.{ "zig-out", "bin", exe.out_filename }),
+        "--",
+    });
+    if (b.args) |args| {
+        watch_cmd.addArgs(args);
+    }
+    watch_step.dependOn(&watch_cmd.step);
+
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.
