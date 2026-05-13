@@ -243,7 +243,7 @@ fn startMainLoop(init: std.process.Init, alloc: std.mem.Allocator, file_path: []
         .allocator = init.gpa,
         .size = .{ .w = WINDOW_WIDTH, .h = WINDOW_HEIGHT },
         .min_size = .{ .w = 640, .h = 420 },
-        .vsync = true,
+        .vsync = false,
         .title = "Transcriber",
     });
     defer backend.deinit();
@@ -375,7 +375,7 @@ fn renderTransport(app: *AppState) void {
 
 fn renderWaveformPanel(app: *AppState) void {
     var panel = dvui.box(@src(), .{}, .{
-        .expand = .both,
+        .expand = .horizontal,
         .min_size_content = .{ .h = WAVEFORM_MIN_HEIGHT },
         .background = true,
         .padding = .{ .x = 8, .y = 8, .w = 8, .h = 8 },
@@ -505,7 +505,6 @@ fn drawWaveform(backend: *SDLBackend, app: *AppState) void {
     const width: u64 = @intFromFloat(@max(rect.w, 1));
     const chunks = wf.getChunksForRendering(app.waveform, cursor_frame, width, audio.channels);
     const center_y = rect.y + rect.h / 2.0;
-    const half_height = rect.h * 0.45;
 
     setClipRect(backend, rect);
     defer clearClipRect(backend);
@@ -513,9 +512,11 @@ fn drawWaveform(backend: *SDLBackend, app: *AppState) void {
     fillRect(backend, rect, 28, 29, 34, 255);
     setDrawColor(backend, 180, 185, 190, 255);
 
+    const WAVEFORM_GAIN: f32 = 4.0;
+
     for (chunks, 0..) |frame, index| {
         const x = rect.x + @as(f32, @floatFromInt(index));
-        const scaled = @min(@abs(frame), 1.0) * half_height;
+        const scaled = @min(@abs(frame) * WAVEFORM_GAIN, 1.0) * rect.h;
         drawLine(backend, x, center_y - scaled, x, center_y + scaled);
     }
 
