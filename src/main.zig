@@ -1,8 +1,14 @@
-const rl = @import("raylib");
-const za = @import("zaudio");
 const std = @import("std");
+const dvui = @import("dvui");
+const SDLBackend = @import("sdl-backend");
+const sdl = SDLBackend.c;
+const za = @import("zaudio");
 const wf = @import("waveform.zig");
 const st = @import("soundtouch.zig");
+
+comptime {
+    std.debug.assert(@hasDecl(SDLBackend, "SDLBackend"));
+}
 
 const AudioState = struct {
     decoder: *za.Decoder,
@@ -29,34 +35,21 @@ const AudioState = struct {
     is_looping: bool,
 };
 
+const AppState = struct {
+    file_path: []const u8,
+    audio: *AudioState,
+    waveform: *wf.WaveFormDisplayState,
+    waveform_rect: ?dvui.Rect.Physical = null,
+};
+
 // Speed adjustment constants
 const SPEED_STEP: u8 = 5; // 5% speed change per key press
 const MIN_SPEED: u8 = 25; // Minimum 25% speed
 const MAX_SPEED: u8 = 200; // Maximum 200% speed
 
-// Window dimensions
-const WINDOW_WIDTH = 800;
-const WINDOW_HEIGHT = 600;
-
-// UI layout constants
-const WAVEFORM_Y_CENTER = 200;
-const WAVEFORM_HEIGHT = 150;
-const PLAYHEAD_Y_START = 50;
-const PLAYHEAD_Y_END = 350;
-const FRAME_DISPLAY_SCALE = 100.0;
-
-fn renderFileError(filePath: []const u8) void {
-    rl.initWindow(600, 200, "Error");
-    defer rl.closeWindow();
-
-    while (!rl.windowShouldClose()) {
-        rl.beginDrawing();
-        rl.clearBackground(rl.Color.ray_white);
-        rl.drawText("Failed to load file:", 10, 40, 20, rl.Color.dark_gray);
-        rl.drawText(rl.textFormat("%s", .{filePath.ptr}), 10, 80, 20, rl.Color.red);
-        rl.endDrawing();
-    }
-}
+const WINDOW_WIDTH: f32 = 1000;
+const WINDOW_HEIGHT: f32 = 700;
+const WAVEFORM_MIN_HEIGHT: f32 = 260;
 
 var debug_callback_count: u32 = 0;
 
@@ -148,18 +141,17 @@ pub fn main(init: std.process.Init) anyerror!void {
         return;
     }
 
-    const filePath = args[1];
+    const file_path = args[1];
 
-    // Check if file exists
-    std.Io.Dir.cwd().access(init.io, filePath, .{}) catch {
-        renderFileError(filePath);
+    std.Io.Dir.cwd().access(init.io, file_path, .{}) catch {
+        std.debug.print("Failed to load file: {s}\n", .{file_path});
         return;
     };
 
-    try startMainLoop(alloc, filePath);
+    try startMainLoop(init, alloc, file_path);
 }
 
-fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
+fn startMainLoop(init: std.process.Init, alloc: std.mem.Allocator, file_path: []const u8) !void {
     // Initialize zaudio
     za.init(alloc);
     defer za.deinit();
@@ -201,7 +193,6 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
     const input_buffer = try alloc.alloc(f32, buffer_size);
     defer alloc.free(input_buffer);
 
-    // Create audio state
     var audio_state = AudioState{
         .decoder = decoder,
         .channels = channels,
@@ -215,11 +206,10 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
         .playback_pitch_shift_semitones = 0,
         .input_buffer = input_buffer,
         .is_looping = false,
-        .loop_start = undefined,
-        .loop_end = undefined,
+        .loop_start = null,
+        .loop_end = null,
     };
 
-    // Configure and create device
     var device_config = za.Device.Config.init(.playback);
     device_config.playback.format = .float32;
     device_config.period_size_in_frames = 1024;
@@ -238,156 +228,419 @@ fn startMainLoop(alloc: std.mem.Allocator, file_path: []const u8) !void {
     const all_samples = try wf.loadAudioBufferFromDecoder(alloc, waveform_decoder, total_frames, channels);
     defer alloc.free(all_samples);
 
-    var wave_form_state = try wf.initWaveFormState(alloc, all_samples);
-    defer wf.deInitWaveFormDisplay(alloc, wave_form_state);
+    var waveform_state = try wf.initWaveFormState(alloc, all_samples);
+    defer wf.deInitWaveFormDisplay(alloc, waveform_state);
 
-    // Start playback
     try device.start();
     defer device.stop() catch {};
 
+    SDLBackend.enableSDLLogging();
+    std.log.info("SDL version: {f}", .{SDLBackend.getSDLVersion()});
+
+    var backend = try SDLBackend.initWindow(.{
+        .io = init.io,
+        .environ_map = init.environ_map,
+        .allocator = init.gpa,
+        .size = .{ .w = WINDOW_WIDTH, .h = WINDOW_HEIGHT },
+        .min_size = .{ .w = 640, .h = 420 },
+        .vsync = true,
+        .title = "Transcriber",
+    });
+    defer backend.deinit();
+
+    _ = SDLBackend.c.SDL_EnableScreenSaver();
+
+    var win = try dvui.Window.init(@src(), init.gpa, backend.backend(), .{
+        .theme = switch (backend.preferredColorScheme() orelse .light) {
+            .light => dvui.Theme.builtin.adwaita_light,
+            .dark => dvui.Theme.builtin.adwaita_dark,
+        },
+    });
+    defer win.deinit();
+
+    var app_state = AppState{
+        .file_path = file_path,
+        .audio = &audio_state,
+        .waveform = &waveform_state,
+    };
+
     std.debug.print("Playback started\n", .{});
 
-    // raylib setup
-    rl.setConfigFlags(.{ .vsync_hint = true });
-    rl.initWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Music Player");
-    defer rl.closeWindow();
+    var interrupted = false;
+    while (true) {
+        const nstime = win.beginWait(interrupted);
+        try win.begin(nstime);
 
-    while (!rl.windowShouldClose()) {
-        rl.beginDrawing();
-        defer rl.endDrawing();
+        try backend.addAllEvents(&win);
 
-        rl.clearBackground(rl.Color.ray_white);
-        rl.drawFPS(10, 10);
+        _ = sdl.SDL_SetRenderDrawColor(backend.renderer, 18, 18, 20, 255);
+        _ = sdl.SDL_RenderClear(backend.renderer);
 
-        const status_text = if (audio_state.is_playing) "Playing..." else "Paused";
-        rl.drawText(status_text, 10, 40, 20, rl.Color.dark_gray);
+        const keep_running = appFrame(&app_state);
 
-        // Get current playback position
-        const cursor_frame = audio_state.current_frame.load(.acquire);
+        const end_micros = try win.end(.{});
 
-        if (audio_state.is_looping and cursor_frame > audio_state.loop_end orelse audio_state.total_frames) {
-            audio_state.current_frame.store(audio_state.loop_start orelse 0, .release);
-            audio_state.decoder.seekToPCMFrames(audio_state.loop_start orelse 0) catch {};
-        }
-        const current_seconds: f32 = @as(f32, @floatFromInt(cursor_frame)) / @as(f32, @floatFromInt(sample_rate));
+        drawWaveform(&backend, &app_state);
 
-        rl.drawText(rl.textFormat("Position: %.2f / %.2f seconds", .{ current_seconds, total_seconds }), 10, 80, 20, rl.Color.dark_gray);
+        try backend.setCursor(win.cursorRequested());
+        try backend.textInputRect(win.textInputRequested());
+        try backend.renderPresent();
 
-        // Display current playback speed
-        const current_speed = audio_state.playback_speed.load(.acquire);
-        rl.drawText(rl.textFormat("Speed: %d%%", .{current_speed}), 10, 110, 20, rl.Color.dark_blue);
-        rl.drawText(rl.textFormat("Pitch: %f", .{audio_state.playback_pitch_shift_semitones}), 150, 110, 20, rl.Color.dark_blue);
-        rl.drawText("Up/Down: Adjust speed", 10, 140, 16, rl.Color.gray);
+        if (!keep_running) break;
 
-        // Draw waveform
-        const wave_frames = wf.getChunksForRendering(&wave_form_state, cursor_frame, WINDOW_WIDTH, channels);
-        for (wave_frames, 0..) |frame, index| {
-            const y_offset = @as(i32, @intFromFloat(frame * FRAME_DISPLAY_SCALE));
-            rl.drawLine(@intCast(index), WAVEFORM_Y_CENTER - y_offset, @intCast(index), WAVEFORM_Y_CENTER + y_offset, rl.Color.dark_gray);
-        }
+        const wait_event_micros = win.waitTime(end_micros);
+        interrupted = try backend.waitEventTimeout(wait_event_micros);
+    }
+}
 
-        // Draw vertical bar at playhead position
-        const total_chunks: u64 = @intCast(wave_form_state.chunks.len);
-        const playhead_x = wf.getXCoordFromPCMFrame(wave_form_state, cursor_frame, channels, total_chunks);
-        rl.drawLine(@intCast(playhead_x), PLAYHEAD_Y_START, @intCast(playhead_x), PLAYHEAD_Y_END, rl.Color.red);
+fn appFrame(app: *AppState) bool {
+    const audio = app.audio;
+    applyLoopIfNeeded(audio);
 
-        if (audio_state.loop_start) |pcm_frame| {
-            const loop_start_x = wf.getXCoordFromPCMFrame(wave_form_state, pcm_frame, channels, total_chunks);
-            rl.drawLine(@intCast(loop_start_x), PLAYHEAD_Y_START, @intCast(loop_start_x), PLAYHEAD_Y_END, rl.Color.blue);
-        }
+    var root = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .both,
+        .style = .window,
+        .background = true,
+        .padding = .{ .x = 12, .y = 12, .w = 12, .h = 12 },
+    });
+    defer root.deinit();
 
-        if (audio_state.loop_end) |pcm_frame| {
-            const loop_end_x = wf.getXCoordFromPCMFrame(wave_form_state, pcm_frame, channels, total_chunks);
-            rl.drawLine(@intCast(loop_end_x), PLAYHEAD_Y_START, @intCast(loop_end_x), PLAYHEAD_Y_END, rl.Color.blue);
-        }
+    renderHeader(app);
+    renderTransport(app);
+    renderWaveformPanel(app);
+    renderFooter(app);
 
-        // Controls
-        if (rl.isKeyPressed(.left)) {
-            const seek_time = @max(current_seconds - 5.0, 0.0);
-            const seek_frame = @as(u64, @intFromFloat(seek_time * @as(f32, @floatFromInt(sample_rate))));
-            audio_state.decoder.seekToPCMFrames(seek_frame) catch {};
-            audio_state.current_frame.store(seek_frame, .release);
-            // Clear SoundTouch buffers on seek to avoid audio artifacts
-            audio_state.soundtouch.clear();
-        }
+    const keep_running = handleEvents(app);
+    if (audio.is_playing) {
+        dvui.refresh(null, @src(), null);
+    }
 
-        if (rl.isKeyPressed(.right)) {
-            const seek_time = @min(current_seconds + 5.0, total_seconds);
-            const seek_frame = @as(u64, @intFromFloat(seek_time * @as(f32, @floatFromInt(sample_rate))));
-            audio_state.decoder.seekToPCMFrames(seek_frame) catch {};
-            audio_state.current_frame.store(seek_frame, .release);
-            // Clear SoundTouch buffers on seek to avoid audio artifacts
-            audio_state.soundtouch.clear();
-        }
+    return keep_running;
+}
 
-        if (rl.isKeyPressed(.space)) {
-            audio_state.is_playing = !audio_state.is_playing;
-        }
+fn renderHeader(app: *AppState) void {
+    const audio = app.audio;
+    const cursor_frame = audio.current_frame.load(.acquire);
+    const current_seconds = secondsFromFrame(audio, cursor_frame);
+    const status_text = if (audio.is_playing) "Playing" else "Paused";
 
-        // Speed controls - Up arrow increases speed, Down arrow decreases speed
-        if (rl.isKeyPressed(.up)) {
-            if (rl.isKeyDown(.left_shift)) {
-                audio_state.playback_pitch_shift_semitones = audio_state.playback_pitch_shift_semitones + 1;
-                audio_state.soundtouch.setPitchSemiTones(audio_state.playback_pitch_shift_semitones);
-            } else {
-                const new_speed = @min(current_speed + SPEED_STEP, MAX_SPEED);
-                audio_state.playback_speed.store(new_speed, .release);
-                audio_state.soundtouch.setTempo(getFloatSpeedFromInt(new_speed));
-                std.debug.print("Speed increased to {d:.0}%\n", .{new_speed});
-            }
-        }
+    var header = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal });
+    defer header.deinit();
 
-        if (rl.isKeyPressed(.down)) {
-            if (rl.isKeyDown(.left_shift)) {
-                audio_state.playback_pitch_shift_semitones = audio_state.playback_pitch_shift_semitones - 1;
-                audio_state.soundtouch.setPitchSemiTones(audio_state.playback_pitch_shift_semitones);
-            } else {
-                const new_speed = @max(current_speed - SPEED_STEP, MIN_SPEED);
-                audio_state.playback_speed.store(new_speed, .release);
-                audio_state.soundtouch.setTempo(getFloatSpeedFromInt(new_speed));
-                std.debug.print("Speed decreased to {d:.0}%\n", .{new_speed});
-            }
-        }
+    dvui.labelNoFmt(@src(), app.file_path, .{}, .{ .font = .theme(.title), .expand = .horizontal });
+    dvui.label(@src(), "{s}  |  {d:.2} / {d:.2}s  |  {d:.1} FPS", .{ status_text, current_seconds, audio.total_seconds, dvui.FPS() }, .{});
+}
 
-        if (rl.isKeyPressed(.f)) {
-            wave_form_state.displayMode = .FollowingPlayHead;
-        }
+fn renderTransport(app: *AppState) void {
+    const audio = app.audio;
 
-        const mouse_wheel_move: i64 = @intFromFloat(rl.getMouseWheelMove());
-        if (mouse_wheel_move != 0) {
-            std.debug.print("mouse wheel move {}\n", .{mouse_wheel_move});
-            var direction: wf.ScrollDirection = undefined;
-            if (mouse_wheel_move < 0) {
-                direction = .Down;
-            } else {
-                direction = .Up;
-            }
+    var controls = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .margin = .{ .y = 10, .h = 6 },
+    });
+    defer controls.deinit();
 
-            wf.scrollDisplay(&wave_form_state, direction, WINDOW_WIDTH);
-        }
+    if (dvui.button(@src(), if (audio.is_playing) "Pause" else "Play", .{}, .{})) {
+        togglePlayback(audio);
+    }
 
-        if (rl.isMouseButtonPressed(.left)) {
-            const mouse_position = rl.getMousePosition();
-            std.debug.print("Mouse X: {}\n", .{mouse_position.x});
-            const x: u64 = @intFromFloat(mouse_position.x);
-            const frame = wf.getFrameIndex(&wave_form_state, x, channels);
-            std.debug.print("Jumping to frame: {}", .{frame});
-            audio_state.decoder.seekToPCMFrames(frame) catch {};
-            audio_state.current_frame.store(frame, .release);
-        }
+    if (dvui.button(@src(), "-5s", .{}, .{})) {
+        seekRelativeSeconds(audio, -5.0);
+    }
 
-        if (rl.isKeyPressed(.s)) {
-            audio_state.loop_start = cursor_frame;
-        }
+    if (dvui.button(@src(), "+5s", .{}, .{})) {
+        seekRelativeSeconds(audio, 5.0);
+    }
 
-        if (rl.isKeyPressed(.e)) {
-            audio_state.loop_end = cursor_frame;
-        }
+    if (dvui.button(@src(), "Set Loop Start", .{}, .{})) {
+        audio.loop_start = audio.current_frame.load(.acquire);
+    }
 
-        if (rl.isKeyPressed(.l)) {
-            audio_state.is_looping = !audio_state.is_looping;
+    if (dvui.button(@src(), "Set Loop End", .{}, .{})) {
+        audio.loop_end = audio.current_frame.load(.acquire);
+    }
+
+    if (dvui.button(@src(), "Clear Loop", .{}, .{})) {
+        audio.loop_start = null;
+        audio.loop_end = null;
+    }
+
+    _ = dvui.checkbox(@src(), &audio.is_looping, "Loop", .{});
+
+    var follow = app.waveform.displayMode == .FollowingPlayHead;
+    if (dvui.checkbox(@src(), &follow, "Follow", .{})) {
+        app.waveform.displayMode = if (follow) .FollowingPlayHead else .FreeFloating;
+    }
+}
+
+fn renderWaveformPanel(app: *AppState) void {
+    var panel = dvui.box(@src(), .{}, .{
+        .expand = .both,
+        .min_size_content = .{ .h = WAVEFORM_MIN_HEIGHT },
+        .background = true,
+        .padding = .{ .x = 8, .y = 8, .w = 8, .h = 8 },
+        .margin = .{ .y = 6, .h = 6 },
+    });
+    defer panel.deinit();
+
+    app.waveform_rect = panel.data().contentRectScale().r;
+}
+
+fn renderFooter(app: *AppState) void {
+    const audio = app.audio;
+    var settings = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal });
+    defer settings.deinit();
+
+    var speed_percent: f32 = @floatFromInt(audio.playback_speed.load(.acquire));
+    const original_speed = speed_percent;
+    _ = dvui.sliderEntry(@src(), "Speed: {d:0.0}%", .{
+        .value = &speed_percent,
+        .min = @as(f32, @floatFromInt(MIN_SPEED)),
+        .max = @as(f32, @floatFromInt(MAX_SPEED)),
+        .interval = @as(f32, @floatFromInt(SPEED_STEP)),
+    }, .{ .expand = .horizontal });
+    if (@round(speed_percent) != @round(original_speed)) {
+        setSpeed(audio, @intFromFloat(@round(speed_percent)));
+    }
+
+    var pitch = audio.playback_pitch_shift_semitones;
+    const original_pitch = pitch;
+    _ = dvui.sliderEntry(@src(), "Pitch: {d:0.0} semitones", .{
+        .value = &pitch,
+        .min = -12.0,
+        .max = 12.0,
+        .interval = 1.0,
+    }, .{ .expand = .horizontal });
+    if (@round(pitch) != @round(original_pitch)) {
+        setPitch(audio, @round(pitch));
+    }
+
+    var help = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal });
+    help.addText("Shortcuts: Space play/pause, Left/Right seek, Up/Down speed, Shift+Up/Down pitch, S/E loop markers, L loop, F follow. Mouse wheel scrolls waveform; click waveform to seek.", .{});
+    help.deinit();
+
+    if (dvui.button(@src(), "Debug Window", .{}, .{})) {
+        dvui.toggleDebugWindow();
+    }
+}
+
+fn handleEvents(app: *AppState) bool {
+    var keep_running = true;
+    for (dvui.events()) |*event| {
+        if (event.handled) continue;
+
+        switch (event.evt) {
+            .key => |key| {
+                if (key.action != .down and key.action != .repeat) continue;
+                handleKey(app, key);
+            },
+            .mouse => |mouse| handleMouse(app, mouse),
+            .window => |window| {
+                if (window.action == .close) keep_running = false;
+            },
+            .app => |app_event| {
+                if (app_event.action == .quit) keep_running = false;
+            },
+            .text => {},
         }
     }
+
+    return keep_running;
+}
+
+fn handleKey(app: *AppState, key: dvui.Event.Key) void {
+    const audio = app.audio;
+    switch (key.code) {
+        .space => togglePlayback(audio),
+        .left => seekRelativeSeconds(audio, -5.0),
+        .right => seekRelativeSeconds(audio, 5.0),
+        .up => {
+            if (key.mod.shift()) {
+                setPitch(audio, audio.playback_pitch_shift_semitones + 1.0);
+            } else {
+                adjustSpeed(audio, SPEED_STEP);
+            }
+        },
+        .down => {
+            if (key.mod.shift()) {
+                setPitch(audio, audio.playback_pitch_shift_semitones - 1.0);
+            } else {
+                adjustSpeed(audio, -@as(i16, SPEED_STEP));
+            }
+        },
+        .f => app.waveform.displayMode = .FollowingPlayHead,
+        .s => audio.loop_start = audio.current_frame.load(.acquire),
+        .e => audio.loop_end = audio.current_frame.load(.acquire),
+        .l => audio.is_looping = !audio.is_looping,
+        else => {},
+    }
+}
+
+fn handleMouse(app: *AppState, mouse: dvui.Event.Mouse) void {
+    const rect = app.waveform_rect orelse return;
+    if (!pointInRect(mouse.p, rect)) return;
+
+    switch (mouse.action) {
+        .press => {
+            if (mouse.button == .left) {
+                const x = @max(mouse.p.x - rect.x, 0);
+                const frame = wf.getFrameIndex(app.waveform, @intFromFloat(x), app.audio.channels);
+                seekToFrame(app.audio, frame);
+            }
+        },
+        .wheel_y => |delta| {
+            const direction: wf.ScrollDirection = if (delta < 0) .Down else .Up;
+            wf.scrollDisplay(app.waveform, direction, @intFromFloat(@max(rect.w, 1)));
+        },
+        else => {},
+    }
+}
+
+fn drawWaveform(backend: *SDLBackend, app: *AppState) void {
+    const rect = app.waveform_rect orelse return;
+    if (rect.w <= 1 or rect.h <= 1) return;
+
+    const audio = app.audio;
+    const cursor_frame = audio.current_frame.load(.acquire);
+    const width: u64 = @intFromFloat(@max(rect.w, 1));
+    const chunks = wf.getChunksForRendering(app.waveform, cursor_frame, width, audio.channels);
+    const center_y = rect.y + rect.h / 2.0;
+    const half_height = rect.h * 0.45;
+
+    setClipRect(backend, rect);
+    defer clearClipRect(backend);
+
+    fillRect(backend, rect, 28, 29, 34, 255);
+    setDrawColor(backend, 180, 185, 190, 255);
+
+    for (chunks, 0..) |frame, index| {
+        const x = rect.x + @as(f32, @floatFromInt(index));
+        const scaled = @min(@abs(frame), 1.0) * half_height;
+        drawLine(backend, x, center_y - scaled, x, center_y + scaled);
+    }
+
+    const total_chunks: u64 = @intCast(app.waveform.chunks.len);
+    drawMarker(backend, rect, app.waveform.*, cursor_frame, audio.channels, total_chunks, 240, 64, 64);
+
+    if (audio.loop_start) |loop_start| {
+        drawMarker(backend, rect, app.waveform.*, loop_start, audio.channels, total_chunks, 76, 132, 255);
+    }
+
+    if (audio.loop_end) |loop_end| {
+        drawMarker(backend, rect, app.waveform.*, loop_end, audio.channels, total_chunks, 76, 132, 255);
+    }
+}
+
+fn drawMarker(backend: *SDLBackend, rect: dvui.Rect.Physical, waveform: wf.WaveFormDisplayState, frame: u64, channels: u32, total_chunks: u64, r: u8, g: u8, b: u8) void {
+    if (total_chunks == 0) return;
+
+    const x_offset = wf.getXCoordFromPCMFrame(waveform, frame, channels, total_chunks);
+    if (x_offset >= @as(u64, @intFromFloat(@max(rect.w, 1)))) return;
+
+    const x = rect.x + @as(f32, @floatFromInt(x_offset));
+    setDrawColor(backend, r, g, b, 255);
+    drawLine(backend, x, rect.y, x, rect.y + rect.h);
+}
+
+fn fillRect(backend: *SDLBackend, rect: dvui.Rect.Physical, r: u8, g: u8, b: u8, a: u8) void {
+    setDrawColor(backend, r, g, b, a);
+    if (SDLBackend.sdl3) {
+        const sdl_rect = sdl.SDL_FRect{ .x = rect.x, .y = rect.y, .w = rect.w, .h = rect.h };
+        _ = sdl.SDL_RenderFillRect(backend.renderer, &sdl_rect);
+    } else {
+        const sdl_rect = sdl.SDL_Rect{ .x = @intFromFloat(rect.x), .y = @intFromFloat(rect.y), .w = @intFromFloat(rect.w), .h = @intFromFloat(rect.h) };
+        _ = sdl.SDL_RenderFillRect(backend.renderer, &sdl_rect);
+    }
+}
+
+fn setDrawColor(backend: *SDLBackend, r: u8, g: u8, b: u8, a: u8) void {
+    _ = sdl.SDL_SetRenderDrawColor(backend.renderer, r, g, b, a);
+}
+
+fn drawLine(backend: *SDLBackend, x1: f32, y1: f32, x2: f32, y2: f32) void {
+    if (SDLBackend.sdl3) {
+        _ = sdl.SDL_RenderLine(backend.renderer, x1, y1, x2, y2);
+    } else {
+        _ = sdl.SDL_RenderDrawLine(backend.renderer, @intFromFloat(x1), @intFromFloat(y1), @intFromFloat(x2), @intFromFloat(y2));
+    }
+}
+
+fn setClipRect(backend: *SDLBackend, rect: dvui.Rect.Physical) void {
+    const clip = sdl.SDL_Rect{
+        .x = @intFromFloat(rect.x),
+        .y = @intFromFloat(rect.y),
+        .w = @intFromFloat(rect.w),
+        .h = @intFromFloat(rect.h),
+    };
+    if (SDLBackend.sdl3) {
+        _ = sdl.SDL_SetRenderClipRect(backend.renderer, &clip);
+    } else {
+        _ = sdl.SDL_RenderSetClipRect(backend.renderer, &clip);
+    }
+}
+
+fn clearClipRect(backend: *SDLBackend) void {
+    if (SDLBackend.sdl3) {
+        _ = sdl.SDL_SetRenderClipRect(backend.renderer, null);
+    } else {
+        _ = sdl.SDL_RenderSetClipRect(backend.renderer, null);
+    }
+}
+
+fn pointInRect(point: dvui.Point.Physical, rect: dvui.Rect.Physical) bool {
+    return point.x >= rect.x and point.x <= rect.x + rect.w and point.y >= rect.y and point.y <= rect.y + rect.h;
+}
+
+fn applyLoopIfNeeded(audio: *AudioState) void {
+    if (!audio.is_looping) return;
+
+    const cursor_frame = audio.current_frame.load(.acquire);
+    const loop_end = audio.loop_end orelse return;
+    if (cursor_frame <= loop_end) return;
+
+    seekToFrame(audio, audio.loop_start orelse 0);
+}
+
+fn togglePlayback(audio: *AudioState) void {
+    audio.is_playing = !audio.is_playing;
+}
+
+fn seekRelativeSeconds(audio: *AudioState, delta: f32) void {
+    const current_seconds = secondsFromFrame(audio, audio.current_frame.load(.acquire));
+    const seek_time = std.math.clamp(current_seconds + delta, 0.0, audio.total_seconds);
+    seekToFrame(audio, frameFromSeconds(audio, seek_time));
+}
+
+fn seekToFrame(audio: *AudioState, frame: u64) void {
+    const clamped = @min(frame, audio.total_frames);
+    audio.decoder.seekToPCMFrames(clamped) catch {};
+    audio.current_frame.store(clamped, .release);
+    audio.soundtouch.clear();
+}
+
+fn adjustSpeed(audio: *AudioState, delta: i16) void {
+    const current_speed: i16 = @intCast(audio.playback_speed.load(.acquire));
+    const next = std.math.clamp(current_speed + delta, MIN_SPEED, MAX_SPEED);
+    setSpeed(audio, @intCast(next));
+}
+
+fn setSpeed(audio: *AudioState, speed: u8) void {
+    const clamped = std.math.clamp(speed, MIN_SPEED, MAX_SPEED);
+    audio.playback_speed.store(clamped, .release);
+    audio.soundtouch.setTempo(getFloatSpeedFromInt(clamped));
+}
+
+fn setPitch(audio: *AudioState, pitch: f32) void {
+    audio.playback_pitch_shift_semitones = std.math.clamp(pitch, -12.0, 12.0);
+    audio.soundtouch.setPitchSemiTones(audio.playback_pitch_shift_semitones);
+}
+
+fn secondsFromFrame(audio: *AudioState, frame: u64) f32 {
+    return @as(f32, @floatFromInt(frame)) / @as(f32, @floatFromInt(audio.sample_rate));
+}
+
+fn frameFromSeconds(audio: *AudioState, seconds: f32) u64 {
+    return @intFromFloat(seconds * @as(f32, @floatFromInt(audio.sample_rate)));
 }
 
 pub fn getFloatSpeedFromInt(speed: u8) f32 {

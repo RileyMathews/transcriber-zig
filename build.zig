@@ -97,22 +97,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
-    // raylib dependency
-    const raylib_dep = b.dependency("raylib_zig", .{
+    const dvui_dep = b.dependency("dvui", .{
         .target = target,
         .optimize = optimize,
-        .raudio = false, // Disable raylib's audio to avoid conflicts with zaudio
+        .backend = .sdl3,
     });
 
     // miniaudio dependency
     const zaudio = b.dependency("zaudio", .{});
-
-    const raylib = raylib_dep.module("raylib");
-    const raylib_artifact = raylib_dep.artifact("raylib");
-    if (target.result.os.tag == .linux) {
-        raylib_artifact.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
-        raylib_artifact.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
-    }
 
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
@@ -157,11 +149,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    exe.root_module.linkLibrary(raylib_artifact);
-    exe.root_module.addImport("raylib", raylib);
-    if (target.result.os.tag == .linux) {
-        exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
-    }
+    exe.root_module.addImport("dvui", dvui_dep.module("dvui_sdl3"));
+    exe.root_module.addImport("sdl-backend", dvui_dep.module("sdl3"));
 
     exe.root_module.addImport("zaudio", zaudio.module("root"));
     exe.root_module.linkLibrary(zaudio.artifact("miniaudio"));
