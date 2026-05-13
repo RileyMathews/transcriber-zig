@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 fn buildSoundTouch(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
     const soundtouch_dep = b.dependency("soundtouch", .{});
@@ -14,8 +15,8 @@ fn buildSoundTouch(b: *std.Build, target: std.Build.ResolvedTarget, optimize: st
     });
 
     // Add include paths
-    lib.addIncludePath(soundtouch_dep.path("include"));
-    lib.addIncludePath(soundtouch_dep.path("source/SoundTouch"));
+    lib.root_module.addIncludePath(soundtouch_dep.path("include"));
+    lib.root_module.addIncludePath(soundtouch_dep.path("source/SoundTouch"));
 
     // Define SOUNDTOUCH_FLOAT_SAMPLES for floating point processing
     lib.root_module.addCMacro("SOUNDTOUCH_FLOAT_SAMPLES", "1");
@@ -39,7 +40,7 @@ fn buildSoundTouch(b: *std.Build, target: std.Build.ResolvedTarget, optimize: st
         "source/SoundTouchDLL/SoundTouchDLL.cpp",
     };
 
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = soundtouch_dep.path("."),
         .files = soundtouch_sources,
         .flags = &.{
@@ -62,7 +63,11 @@ pub fn build(b: *std.Build) void {
     // what target to build for. Here we do not override the defaults, which
     // means any target is allowed, and the default is native. Other options
     // for restricting supported target set are available.
-    const target = b.standardTargetOptions(.{});
+    const default_target: std.Target.Query = if (builtin.os.tag == .linux)
+        .{ .cpu_arch = builtin.cpu.arch, .os_tag = .linux, .abi = .gnu }
+    else
+        .{};
+    const target = b.standardTargetOptions(.{ .default_target = default_target });
     // Standard optimization options allow the person running `zig build` to select
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
@@ -104,6 +109,10 @@ pub fn build(b: *std.Build) void {
 
     const raylib = raylib_dep.module("raylib");
     const raylib_artifact = raylib_dep.artifact("raylib");
+    if (target.result.os.tag == .linux) {
+        raylib_artifact.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
+        raylib_artifact.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+    }
 
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
@@ -123,6 +132,7 @@ pub fn build(b: *std.Build) void {
     // don't need and to put everything under a single module.
     const exe = b.addExecutable(.{
         .name = "zig_raylib_test",
+        .use_lld = false,
         .root_module = b.createModule(.{
             // b.createModule defines a new module just like b.addModule but,
             // unlike b.addModule, it does not expose the module to consumers of
@@ -147,25 +157,26 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    exe.linkLibrary(raylib_artifact);
+    exe.root_module.linkLibrary(raylib_artifact);
     exe.root_module.addImport("raylib", raylib);
+    if (target.result.os.tag == .linux) {
+        exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+    }
 
     exe.root_module.addImport("zaudio", zaudio.module("root"));
-    exe.linkLibrary(zaudio.artifact("miniaudio"));
+    exe.root_module.linkLibrary(zaudio.artifact("miniaudio"));
 
     // Build and link SoundTouch
     const soundtouch_lib = buildSoundTouch(b, target, optimize);
-    exe.linkLibrary(soundtouch_lib);
+    exe.root_module.linkLibrary(soundtouch_lib);
 
     // Add SoundTouch include path for the C header (needed for @cImport)
     const soundtouch_dep = b.dependency("soundtouch", .{});
-    exe.addIncludePath(soundtouch_dep.path("source/SoundTouchDLL"));
-    exe.addIncludePath(soundtouch_dep.path("include"));
     exe.root_module.addIncludePath(soundtouch_dep.path("source/SoundTouchDLL"));
     exe.root_module.addIncludePath(soundtouch_dep.path("include"));
 
     // Allow duplicate symbols by using wrapper approach
-    exe.linkLibC();
+    exe.root_module.linkSystemLibrary("c", .{});
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

@@ -33,12 +33,12 @@
     // internet connectivity.
     .dependencies = .{
         .raylib_zig = .{
-            .url = "git+https://github.com/raylib-zig/raylib-zig?ref=devel#a4d18b2d1cf8fdddec68b5b084535fca0475f466",
-            .hash = "raylib_zig-5.6.0-dev-KE8REL5MBQAf3p497t52Xw9P7ojndIkVOWPXnLiLLw2P",
+            .url = "git+https://github.com/raylib-zig/raylib-zig?ref=devel#5ffbf6764a60938ba75c67fc7dda5de729ff96cc",
+            .hash = "raylib_zig-6.0.0-KE8REPR4BQAxAmhVoHCgncCU01fDSBaFhRefp-kJmZq6",
         },
         .zaudio = .{
-            .url = "git+https://github.com/zig-gamedev/zaudio#bb93ad665b89e302d4515a36b44cb8e73eaf6766",
-            .hash = "zaudio-0.11.0-dev-_M-91kHvPwAlW8MCRI4XiTbTeihqB8Zspgiuw-6Gqgdz",
+            .url = "git+https://github.com/fourlexboehm/zaudio?ref=codex/update-zaudio-zig-0-16#557f8fcdf0c26e86a57f83e2a67affd09aa6498b",
+            .hash = "zaudio-0.11.0-dev-_M-91qoyQQDfje5uM1OSx8a67bMWZMza4gWUhbqKJCV2",
         },
         .soundtouch = .{
             .url = "git+https://codeberg.org/soundtouch/soundtouch#2.4.0",

@@ -139,13 +139,9 @@ fn dataCallback(device: *za.Device, output: ?*anyopaque, _: ?*const anyopaque, f
     }
 }
 
-pub fn main() anyerror!void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
+pub fn main(init: std.process.Init) anyerror!void {
+    const alloc = init.arena.allocator();
+    const args = try init.minimal.args.toSlice(alloc);
 
     if (args.len < 2) {
         std.debug.print("Usage: {s} <file_path>\n", .{args[0]});
@@ -155,7 +151,7 @@ pub fn main() anyerror!void {
     const filePath = args[1];
 
     // Check if file exists
-    std.fs.cwd().access(filePath, .{}) catch {
+    std.Io.Dir.cwd().access(init.io, filePath, .{}) catch {
         renderFileError(filePath);
         return;
     };
