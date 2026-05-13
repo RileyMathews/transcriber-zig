@@ -32,9 +32,9 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .raylib_zig = .{
-            .url = "git+https://github.com/raylib-zig/raylib-zig?ref=devel#5ffbf6764a60938ba75c67fc7dda5de729ff96cc",
-            .hash = "raylib_zig-6.0.0-KE8REPR4BQAxAmhVoHCgncCU01fDSBaFhRefp-kJmZq6",
+        .dvui = .{
+            .url = "git+https://github.com/david-vanderson/dvui?ref=main#28cf388d15be87a74b2398be96bb4e74770e5f3b",
+            .hash = "dvui-0.5.0-dev-AQFJmX4J3wAYFu4RYeqOicQxHLHEmHGUP5_EN6HS_Fq_",
         },
         .zaudio = .{
             .url = "git+https://github.com/fourlexboehm/zaudio?ref=codex/update-zaudio-zig-0-16#557f8fcdf0c26e86a57f83e2a67affd09aa6498b",

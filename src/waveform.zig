@@ -52,6 +52,8 @@ pub fn deInitWaveFormDisplay(alloc: std.mem.Allocator, display: WaveFormDisplayS
 }
 
 pub fn getXCoordFromPCMFrame(display_state: WaveFormDisplayState, playhead_frame: u64, channels: u32, total_chunks: u64) u64 {
+    if (total_chunks == 0) return 0;
+
     // Calculate chunk index in floating point to avoid overflow
     const playhead_frame_f: f32 = @floatFromInt(playhead_frame);
     const channels_f: f32 = @floatFromInt(channels);
@@ -62,6 +64,8 @@ pub fn getXCoordFromPCMFrame(display_state: WaveFormDisplayState, playhead_frame
 }
 
 pub fn getChunksForRendering(display: *WaveFormDisplayState, playhead_frame: u64, chunks_to_display: u64, channels: u32) []f32 {
+    if (display.chunks.len == 0 or chunks_to_display == 0) return display.chunks[0..0];
+
     return switch (display.displayMode) {
         .FollowingPlayHead => getChunksFromPlayheadFrame(display, playhead_frame, chunks_to_display, channels),
         .FreeFloating => getChunksFromStartChunk(display, chunks_to_display),
@@ -69,11 +73,17 @@ pub fn getChunksForRendering(display: *WaveFormDisplayState, playhead_frame: u64
 }
 
 fn getChunksFromStartChunk(display: *WaveFormDisplayState, chunks_to_display: u64) []f32 {
-    return display.chunks[display.startChunk..display.startChunk + chunks_to_display];
+    const total_chunks: u64 = @intCast(display.chunks.len);
+    const visible_chunks = @min(chunks_to_display, total_chunks);
+    const max_start = total_chunks - visible_chunks;
+    display.startChunk = @min(display.startChunk, max_start);
+
+    return display.chunks[display.startChunk .. display.startChunk + visible_chunks];
 }
 
 fn getChunksFromPlayheadFrame(display: *WaveFormDisplayState, playhead_frame: u64, chunks_to_display: u64, channels: u32) []f32 {
     const total_chunks: u64 = @intCast(display.chunks.len);
+    const visible_chunks = @min(chunks_to_display, total_chunks);
     // Calculate chunk index in floating point to avoid overflow
     const playhead_frame_f: f32 = @floatFromInt(playhead_frame);
     const channels_f: f32 = @floatFromInt(channels);
@@ -81,23 +91,19 @@ fn getChunksFromPlayheadFrame(display: *WaveFormDisplayState, playhead_frame: u6
     const playhead_frame_chunk_f = (playhead_frame_f * channels_f) / chunk_size_f;
     const playhead_frame_chunk: u64 = @intFromFloat(@min(playhead_frame_chunk_f, @as(f32, @floatFromInt(total_chunks - 1))));
 
-    const half_display = chunks_to_display / 2;
+    const half_display = visible_chunks / 2;
 
-    const start_chunk = getStartChunk(playhead_frame_chunk, half_display, total_chunks, chunks_to_display);
+    const start_chunk = getStartChunk(playhead_frame_chunk, half_display, total_chunks, visible_chunks);
     display.startChunk = start_chunk;
 
-    return display.chunks[start_chunk..getEndChunk(playhead_frame_chunk, half_display, total_chunks, chunks_to_display)];
+    return display.chunks[start_chunk..getEndChunk(playhead_frame_chunk, half_display, total_chunks, visible_chunks)];
 }
 
 fn getStartChunk(playhead_frame_chunk: u64, half_display: u64, total_chunks: u64, chunks_to_display: u64) u64 {
-    if (playhead_frame_chunk <= half_display) {
+    if (total_chunks <= chunks_to_display or playhead_frame_chunk <= half_display) {
         return 0;
     } else if (playhead_frame_chunk >= total_chunks - half_display) {
-        if (total_chunks > chunks_to_display) {
-            return total_chunks - chunks_to_display;
-        } else {
-            return 0;
-        }
+        return total_chunks - chunks_to_display;
     } else {
         return playhead_frame_chunk - half_display;
     }
@@ -121,8 +127,12 @@ pub const ScrollDirection = enum {
 
 pub fn scrollDisplay(displayState: *WaveFormDisplayState, scroll_direction: ScrollDirection, window_x_size: u64) void {
     displayState.displayMode = .FreeFloating;
+    if (displayState.chunks.len <= window_x_size) {
+        displayState.startChunk = 0;
+        return;
+    }
+
     var new_start_chunk = displayState.startChunk;
-    std.debug.print("new start chunk before scroll: {}", .{new_start_chunk});
     switch (scroll_direction) {
         .Down => {
             new_start_chunk = new_start_chunk -| SCROLL_INCREMENTS;
@@ -136,7 +146,6 @@ pub fn scrollDisplay(displayState: *WaveFormDisplayState, scroll_direction: Scro
         }
     }
 
-    std.debug.print("new start chunk after scroll: {}", .{new_start_chunk});
     displayState.startChunk = new_start_chunk;
 }
 
