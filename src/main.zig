@@ -35,6 +35,59 @@ const AudioState = struct {
     is_looping: bool,
 };
 
+const APP_BUTTON_STYLE: dvui.Options = .{
+    // Identity / metadata
+    .id_extra = null, // Extra number mixed into widget id; use null or any usize (useful in loops).
+    .tag = null, // Optional test/automation tag string; null or "some-tag".
+    .name = "Button", // Debug/display widget name; null or any string.
+    .role = .button, // Accessibility role; null or AccessKit role enum (e.g. .button, .text_input).
+    .label = null, // Accessibility label source; null or .{ .text/.by_id/.for_id/.label_widget = ... }.
+    .data_out = null, // Optional *WidgetData out pointer; null or &widget_data_var.
+
+    // Layout
+    .rect = null, // Absolute placement override; null or dvui.Rect {x,y,w,h}.
+    .expand = null, // Parent expansion behavior; null/.none/.horizontal/.vertical/.both/.ratio.
+    .gravity_x = null, // Horizontal alignment in [0..1]; null uses widget default.
+    .gravity_y = null, // Vertical alignment in [0..1]; null uses widget default.
+    .tab_index = null, // Keyboard nav order; null auto, 0 disables tab focus, lower first.
+
+    // Color overrides
+    .color_fill = null, // Base background color; null or dvui.Color.
+    .color_fill_hover = null, // Hover background color; null or dvui.Color.
+    .color_fill_press = null, // Pressed background color; null or dvui.Color.
+    .color_text = null, // Base text color; null or dvui.Color.
+    .color_text_hover = null, // Hover text color; null or dvui.Color.
+    .color_text_press = null, // Pressed text color; null or dvui.Color.
+    .color_border = null, // Border color; null or dvui.Color.
+
+    // Ninepatch overrides
+    .ninepatch_fill = null, // Base ninepatch image; null or *const dvui.Ninepatch.
+    .ninepatch_hover = null, // Hover ninepatch; null or *const dvui.Ninepatch.
+    .ninepatch_press = null, // Pressed ninepatch; null or *const dvui.Ninepatch.
+
+    // Theme / text
+    .style = .control, // Theme style bucket for color fallback; e.g. .control/.content/.window.
+    .theme = null, // Theme override pointer; null or *const dvui.Theme.
+    .font = null, // Font override; null or dvui.Font (e.g. .theme(.body)).
+
+    // Rendering
+    .rotation = null, // Icon/image rotation (radians clockwise); null or f32.
+
+    // Box model
+    .margin = dvui.Rect.all(4), // Outer spacing (l,t,r,b); dvui.Rect or helpers like Rect.all(v).
+    .border = dvui.Rect.all(1), // Border thickness (l,t,r,b); null or dvui.Rect.
+    .padding = dvui.Rect.all(20), // Inner spacing (l,t,r,b); null or dvui.Rect.
+    .corner_radius = dvui.Rect.all(4), // Corner radii (tl,tr,br,bl); null or dvui.Rect.
+
+    // Sizing
+    .min_size_content = null, // Minimum content size; null or dvui.Size {w,h}.
+    .max_size_content = null, // Maximum content size; null or dvui.Options.MaxSize.
+
+    // Background
+    .background = true, // Draw background fill/border; true/false/null.
+    .box_shadow = null, // Shadow settings; null or dvui.Options.BoxShadow.
+};
+
 const AppState = struct {
     file_path: []const u8,
     audio: *AudioState,
@@ -340,27 +393,27 @@ fn renderTransport(app: *AppState) void {
     });
     defer controls.deinit();
 
-    if (dvui.button(@src(), if (audio.is_playing) "Pause" else "Play", .{}, .{})) {
+    if (dvui.button(@src(), if (audio.is_playing) "Pause" else "Play", .{}, APP_BUTTON_STYLE)) {
         togglePlayback(audio);
     }
 
-    if (dvui.button(@src(), "-5s", .{}, .{})) {
+    if (dvui.button(@src(), "-5s", .{}, APP_BUTTON_STYLE)) {
         seekRelativeSeconds(audio, -5.0);
     }
 
-    if (dvui.button(@src(), "+5s", .{}, .{})) {
+    if (dvui.button(@src(), "+5s", .{}, APP_BUTTON_STYLE)) {
         seekRelativeSeconds(audio, 5.0);
     }
 
-    if (dvui.button(@src(), "Set Loop Start", .{}, .{})) {
+    if (dvui.button(@src(), "Set Loop Start", .{}, APP_BUTTON_STYLE)) {
         audio.loop_start = audio.current_frame.load(.acquire);
     }
 
-    if (dvui.button(@src(), "Set Loop End", .{}, .{})) {
+    if (dvui.button(@src(), "Set Loop End", .{}, APP_BUTTON_STYLE)) {
         audio.loop_end = audio.current_frame.load(.acquire);
     }
 
-    if (dvui.button(@src(), "Clear Loop", .{}, .{})) {
+    if (dvui.button(@src(), "Clear Loop", .{}, APP_BUTTON_STYLE)) {
         audio.loop_start = null;
         audio.loop_end = null;
     }
@@ -419,7 +472,7 @@ fn renderFooter(app: *AppState) void {
     help.addText("Shortcuts: Space play/pause, Left/Right seek, Up/Down speed, Shift+Up/Down pitch, S/E loop markers, L loop, F follow. Mouse wheel scrolls waveform; click waveform to seek.", .{});
     help.deinit();
 
-    if (dvui.button(@src(), "Debug Window", .{}, .{})) {
+    if (dvui.button(@src(), "Debug Window", .{}, APP_BUTTON_STYLE)) {
         dvui.toggleDebugWindow();
     }
 }
